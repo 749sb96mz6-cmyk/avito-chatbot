@@ -198,7 +198,9 @@ describe("generateBotResponse", () => {
 
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
-    expect(systemMsg?.content).toContain("Здоровайся ТОЛЬКО в первом сообщении диалога");
+    expect(systemMsg?.content).toContain("ПРАВИЛА ПРИВЕТСТВИЯ");
+    expect(systemMsg?.content).toContain("ОБЯЗАТЕЛЬНО здоровайся");
+    expect(systemMsg?.content).toContain("НЕЗАВИСИМО от того, поздоровался ли клиент");
     expect(systemMsg?.content).toContain("НЕ здоровайся снова");
   });
 
@@ -211,11 +213,11 @@ describe("generateBotResponse", () => {
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
     expect(systemMsg?.content).toContain("Ты менеджер магазина. Отвечай вежливо.");
-    expect(systemMsg?.content).toContain("Здоровайся ТОЛЬКО в первом сообщении диалога");
+    expect(systemMsg?.content).toContain("ОБЯЗАТЕЛЬНО здоровайся");
   });
 
   it("does NOT duplicate greeting rules if custom prompt already has them", async () => {
-    const customPrompt = "Ты менеджер. Здоровайся ТОЛЬКО в первом сообщении.";
+    const customPrompt = "Ты менеджер. ПРАВИЛА ПРИВЕТСТВИЯ: здоровайся в первом сообщении.";
     await generateBotResponse({
       customerMessage: "Привет",
       systemPrompt: customPrompt,
@@ -223,7 +225,7 @@ describe("generateBotResponse", () => {
 
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
-    const occurrences = (systemMsg?.content.match(/Здоровайся ТОЛЬКО/g) || []).length;
+    const occurrences = (systemMsg?.content.match(/ПРАВИЛА ПРИВЕТСТВИЯ/g) || []).length;
     expect(occurrences).toBe(1);
   });
 
