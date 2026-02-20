@@ -187,8 +187,7 @@ describe("avito-sync", () => {
       expect(db.addPendingMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("skips chats with unchanged updated timestamp (optimization)", async () => {
-      const chatUpdatedAt = new Date(Date.now() - 60_000); // 1 minute ago
+    it("uses unread_only=true to fetch only chats with new messages", async () => {
       const mockAccount = {
         id: 1,
         userId: 1,
@@ -204,22 +203,10 @@ describe("avito-sync", () => {
       };
 
       vi.mocked(db.getAvitoAccountById).mockResolvedValue(mockAccount);
+      // unread_only returns 0 chats = nothing to process
       vi.mocked(avitoApi.getChats).mockResolvedValueOnce({
-        chats: [
-          {
-            id: "chat-1",
-            users: [],
-            updated: Math.floor(chatUpdatedAt.getTime() / 1000),
-          },
-        ],
+        chats: [],
       });
-      // Return existing chat with same lastMessageAt — should be skipped
-      vi.mocked(db.getChatByAvitoChatId).mockResolvedValueOnce({
-        id: 1,
-        avitoAccountId: 1,
-        avitoChatId: "chat-1",
-        lastMessageAt: chatUpdatedAt,
-      } as any);
       vi.mocked(db.getBotSettings).mockResolvedValueOnce({
         id: 1,
         avitoAccountId: 1,
@@ -230,7 +217,13 @@ describe("avito-sync", () => {
 
       const result = await syncAccount(1);
       expect(result.synced).toBe(0);
-      // getChatMessages should NOT have been called (chat was skipped)
+      // getChats should be called with unreadOnly: true
+      expect(avitoApi.getChats).toHaveBeenCalledWith(
+        "avito-user-1",
+        "valid-token",
+        { unreadOnly: true }
+      );
+      // No chats to process = no getChatMessages calls
       expect(avitoApi.getChatMessages).not.toHaveBeenCalled();
     });
 

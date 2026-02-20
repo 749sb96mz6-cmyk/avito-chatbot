@@ -151,13 +151,22 @@ export async function getAccessToken(
 
 /**
  * Get list of chats for an Avito user.
+ * Supports pagination via limit/offset and filtering by unread_only.
  */
 export async function getChats(
   avitoUserId: string,
-  accessToken: string
+  accessToken: string,
+  options?: { unreadOnly?: boolean; limit?: number; offset?: number }
 ): Promise<AvitoChatListResponse> {
-  const url = `${AVITO_API_BASE}/messenger/v2/accounts/${avitoUserId}/chats`;
+  const params = new URLSearchParams();
+  if (options?.unreadOnly) params.set("unread_only", "true");
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.offset) params.set("offset", String(options.offset));
+  
+  const qs = params.toString();
+  const url = `${AVITO_API_BASE}/messenger/v2/accounts/${avitoUserId}/chats${qs ? `?${qs}` : ""}`;
   const startMs = Date.now();
+  const label = options?.unreadOnly ? "getChats(unread)" : `getChats(offset=${options?.offset || 0})`;
   try {
     const { data } = await fetchWithTimeout<AvitoChatListResponse>(
       url,
@@ -165,13 +174,13 @@ export async function getChats(
       API_TIMEOUT_MS,
       "json"
     );
-    console.log(`[AvitoAPI] getChats OK: ${data.chats?.length ?? 0} chats (${Date.now() - startMs}ms)`);
+    console.log(`[AvitoAPI] ${label} OK: ${data.chats?.length ?? 0} chats (${Date.now() - startMs}ms)`);
     return data;
   } catch (error: any) {
     const elapsed = Date.now() - startMs;
     const isAbort = error.name === "AbortError";
-    console.error(`[AvitoAPI] getChats FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
-    throw isAbort ? new Error(`Avito getChats timeout after ${elapsed}ms`) : error;
+    console.error(`[AvitoAPI] ${label} FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito ${label} timeout after ${elapsed}ms`) : error;
   }
 }
 

@@ -1,0 +1,37 @@
+{
+  "query": "SELECT COUNT(*) as total_chats FROM chats; SELECT COUNT(*) as pending_count FROM pending_messages; SELECT id, avitoChatId, customerName, itemTitle, status, lastMessageAt FROM chats ORDER BY lastMessageAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3J1p6DWuZuycUju.root --database 5cBEhbc7R8PnfAoRyL6YGT --execute SELECT COUNT(*) as total_chats FROM chats; SELECT COUNT(*) as pending_count FROM pending_messages; SELECT id, avitoChatId, customerName, itemTitle, status, lastMessageAt FROM chats ORDER BY lastMessageAt DESC LIMIT 5;",
+  "rows": [
+    {
+      "total_chats": "115"
+    },
+    {
+      "total_chats": "pending_count"
+    },
+    {
+      "total_chats": "0"
+    },
+    {
+      "total_chats": "id\tavitoChatId\tcustomerName\titemTitle\tstatus\tlastMessageAt"
+    },
+    {
+      "total_chats": "90002\tu2i-k~JruTKacb3DK2QlmCqY7w\tГаджи Батыров\tУсилитель переднего бампера Kia Sportage QL\tactive\t2026-02-20 19:21:56"
+    },
+    {
+      "total_chats": "90001\tu2i-Ns1AJwd7RA_38VQjFkB0_w\tАлександр Смирнов\tБампер передний Peugeot 2008\tneeds_manager\t2026-02-20 19:01:18"
+    },
+    {
+      "total_chats": "36\tu2i-zl3e~P27QqNN7C0rrKm_DA\tАВТО ДОМ\tНакладка заднего бампера Hyundai Creta GS\tactive\t2026-02-20 17:31:57"
+    },
+    {
+      "total_chats": "60001\tu2i-3kKBI7VXu3XjmITsyk88DQ\tLuxary Parts\tРешетка радиатора BMW X6 G06\tactive\t2026-02-20 16:43:45"
+    },
+    {
+      "total_chats": "60002\tu2i-ZOdrk3kl1PEOoyHt3IHEAA\tДмитрий\tРадиатор основной Renault Logan 2\tactive\t2026-02-20 16:40:31"
+    }
+  ],
+  "messages": [],
+  "stdout": "total_chats\n115\npending_count\n0\nid\tavitoChatId\tcustomerName\titemTitle\tstatus\tlastMessageAt\n90002\tu2i-k~JruTKacb3DK2QlmCqY7w\tГаджи Батыров\tУсилитель переднего бампера Kia Sportage QL\tactive\t2026-02-20 19:21:56\n90001\tu2i-Ns1AJwd7RA_38VQjFkB0_w\tАлександр Смирнов\tБампер передний Peugeot 2008\tneeds_manager\t2026-02-20 19:01:18\n36\tu2i-zl3e~P27QqNN7C0rrKm_DA\tАВТО ДОМ\tНакладка заднего бампера Hyundai Creta GS\tactive\t2026-02-20 17:31:57\n60001\tu2i-3kKBI7VXu3XjmITsyk88DQ\tLuxary Parts\tРешетка радиатора BMW X6 G06\tactive\t2026-02-20 16:43:45\n60002\tu2i-ZOdrk3kl1PEOoyHt3IHEAA\tДмитрий\tРадиатор основной Renault Logan 2\tactive\t2026-02-20 16:40:31\n",
+  "stderr": "",
+  "execution_time_ms": 488
+}
