@@ -337,6 +337,44 @@ describe("generateBotResponse", () => {
     expect(systemMsg?.content).toContain("перезвоним");
     expect(systemMsg?.content).toContain("NEEDS_MANAGER: Пропущенный звонок");
   });
+
+  // Brevity and no-manager-mention tests
+
+  it("includes brevity rules in system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Привет",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("КРИТИЧЕСКОЕ ПРАВИЛО КРАТКОСТИ");
+    expect(systemMsg?.content).toContain("СТРОГО на то, что спросил клиент");
+    expect(systemMsg?.content).toContain("2-4 предложения максимум");
+  });
+
+  it("forbids mentioning manager to client", async () => {
+    await generateBotResponse({
+      customerMessage: "Привет",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain('НИКОГДА не говори клиенту слова "менеджер"');
+    expect(systemMsg?.content).toContain("посмотрим");
+    expect(systemMsg?.content).toContain("вернёмся с ответом");
+  });
+
+  it("includes other parts request handling in system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Есть что-то еще по этой машине?",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("ЗАПРОС ДРУГИХ ЗАПЧАСТЕЙ");
+    expect(systemMsg?.content).toContain("посмотрим, что есть");
+    expect(systemMsg?.content).toContain("NEEDS_MANAGER: Клиент интересуется другими запчастями");
+  });
 });
 
 describe("sendTelegramNotification", () => {
