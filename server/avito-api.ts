@@ -1,10 +1,19 @@
 /**
  * Avito API integration module.
  * Handles OAuth token management and Messenger API calls.
+ * 
+ * RELIABILITY:
+ * - All fetch requests use AbortController with timeout
+ * - Response body parsing (json/text) is also covered by the same AbortController
+ * - If fetch succeeds but body parsing hangs, the abort signal will cancel it
+ * - Detailed logging for every API call to help diagnose issues
  */
 
 const AVITO_API_BASE = "https://api.avito.ru";
 const AVITO_TOKEN_URL = `${AVITO_API_BASE}/token`;
+
+/** Default timeout for API requests (12 seconds) */
+const API_TIMEOUT_MS = 12_000;
 
 export interface AvitoTokenResponse {
   access_token: string;
@@ -64,28 +73,80 @@ export interface AvitoMessageListResponse {
 }
 
 /**
+ * Helper: fetch with timeout using AbortController.
+ * The AbortController covers BOTH the network request AND response body parsing.
+ * This prevents hanging when the server sends headers but body arrives slowly.
+ */
+async function fetchWithTimeout<T>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = API_TIMEOUT_MS,
+  parseAs: "json" | "text" = "json"
+): Promise<{ response: Response; data: T }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      // Parse error body with the same abort signal protection
+      let errorText = "";
+      try {
+        errorText = await response.text();
+      } catch {
+        errorText = "(could not read error body)";
+      }
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    // Parse response body — still under the same timeout
+    const data = parseAs === "json"
+      ? (await response.json()) as T
+      : (await response.text()) as unknown as T;
+
+    return { response, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Get OAuth access token using client_credentials flow.
  */
 export async function getAccessToken(
   clientId: string,
   clientSecret: string
 ): Promise<AvitoTokenResponse> {
-  const response = await fetch(AVITO_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito token error: ${response.status} – ${errorText}`);
+  const startMs = Date.now();
+  try {
+    const { data } = await fetchWithTimeout<AvitoTokenResponse>(
+      AVITO_TOKEN_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      },
+      API_TIMEOUT_MS,
+      "json"
+    );
+    console.log(`[AvitoAPI] getAccessToken OK (${Date.now() - startMs}ms)`);
+    return data;
+  } catch (error: any) {
+    const elapsed = Date.now() - startMs;
+    const isAbort = error.name === "AbortError";
+    console.error(`[AvitoAPI] getAccessToken FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito token timeout after ${elapsed}ms`) : error;
   }
-
-  return (await response.json()) as AvitoTokenResponse;
 }
 
 /**
@@ -96,16 +157,22 @@ export async function getChats(
   accessToken: string
 ): Promise<AvitoChatListResponse> {
   const url = `${AVITO_API_BASE}/messenger/v2/accounts/${avitoUserId}/chats`;
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito getChats error: ${response.status} – ${errorText}`);
+  const startMs = Date.now();
+  try {
+    const { data } = await fetchWithTimeout<AvitoChatListResponse>(
+      url,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      API_TIMEOUT_MS,
+      "json"
+    );
+    console.log(`[AvitoAPI] getChats OK: ${data.chats?.length ?? 0} chats (${Date.now() - startMs}ms)`);
+    return data;
+  } catch (error: any) {
+    const elapsed = Date.now() - startMs;
+    const isAbort = error.name === "AbortError";
+    console.error(`[AvitoAPI] getChats FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito getChats timeout after ${elapsed}ms`) : error;
   }
-
-  return (await response.json()) as AvitoChatListResponse;
 }
 
 /**
@@ -117,16 +184,22 @@ export async function getChatMessages(
   accessToken: string
 ): Promise<AvitoMessageListResponse> {
   const url = `${AVITO_API_BASE}/messenger/v3/accounts/${avitoUserId}/chats/${chatId}/messages/`;
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito getChatMessages error: ${response.status} – ${errorText}`);
+  const startMs = Date.now();
+  try {
+    const { data } = await fetchWithTimeout<AvitoMessageListResponse>(
+      url,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      API_TIMEOUT_MS,
+      "json"
+    );
+    console.log(`[AvitoAPI] getChatMessages(${chatId}) OK: ${data.messages?.length ?? 0} msgs (${Date.now() - startMs}ms)`);
+    return data;
+  } catch (error: any) {
+    const elapsed = Date.now() - startMs;
+    const isAbort = error.name === "AbortError";
+    console.error(`[AvitoAPI] getChatMessages(${chatId}) FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito getChatMessages timeout after ${elapsed}ms`) : error;
   }
-
-  return (await response.json()) as AvitoMessageListResponse;
 }
 
 /**
@@ -139,24 +212,32 @@ export async function sendMessage(
   accessToken: string
 ): Promise<AvitoMessage> {
   const url = `${AVITO_API_BASE}/messenger/v1/accounts/${avitoUserId}/chats/${chatId}/messages`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: { text },
-      type: "text",
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito sendMessage error: ${response.status} – ${errorText}`);
+  const startMs = Date.now();
+  try {
+    const { data } = await fetchWithTimeout<AvitoMessage>(
+      url,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: { text },
+          type: "text",
+        }),
+      },
+      API_TIMEOUT_MS,
+      "json"
+    );
+    console.log(`[AvitoAPI] sendMessage(${chatId}) OK (${Date.now() - startMs}ms)`);
+    return data;
+  } catch (error: any) {
+    const elapsed = Date.now() - startMs;
+    const isAbort = error.name === "AbortError";
+    console.error(`[AvitoAPI] sendMessage(${chatId}) FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito sendMessage timeout after ${elapsed}ms`) : error;
   }
-
-  return (await response.json()) as AvitoMessage;
 }
 
 /**
@@ -168,10 +249,24 @@ export async function markChatRead(
   accessToken: string
 ): Promise<void> {
   const url = `${AVITO_API_BASE}/messenger/v1/accounts/${avitoUserId}/chats/${chatId}/read`;
-  await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const startMs = Date.now();
+  try {
+    await fetchWithTimeout<string>(
+      url,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+      API_TIMEOUT_MS,
+      "text"
+    );
+    console.log(`[AvitoAPI] markChatRead(${chatId}) OK (${Date.now() - startMs}ms)`);
+  } catch (error: any) {
+    const elapsed = Date.now() - startMs;
+    const isAbort = error.name === "AbortError";
+    console.error(`[AvitoAPI] markChatRead(${chatId}) FAILED after ${elapsed}ms: ${isAbort ? "TIMEOUT" : error.message}`);
+    throw isAbort ? new Error(`Avito markChatRead timeout after ${elapsed}ms`) : error;
+  }
 }
 
 /**
@@ -183,19 +278,19 @@ export async function subscribeWebhook(
   accessToken: string
 ): Promise<void> {
   const url = `${AVITO_API_BASE}/messenger/v3/webhook`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
+  await fetchWithTimeout<string>(
+    url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url: webhookUrl }),
     },
-    body: JSON.stringify({ url: webhookUrl }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito subscribeWebhook error: ${response.status} – ${errorText}`);
-  }
+    API_TIMEOUT_MS,
+    "text"
+  );
 }
 
 /**
@@ -207,17 +302,17 @@ export async function unsubscribeWebhook(
   accessToken: string
 ): Promise<void> {
   const url = `${AVITO_API_BASE}/messenger/v1/webhook/unsubscribe`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
+  await fetchWithTimeout<string>(
+    url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url: webhookUrl }),
     },
-    body: JSON.stringify({ url: webhookUrl }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Avito unsubscribeWebhook error: ${response.status} – ${errorText}`);
-  }
+    API_TIMEOUT_MS,
+    "text"
+  );
 }

@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_
 import { z } from "zod";
 import * as db from "./db";
 import * as avitoApi from "./avito-api";
-import { syncAccount, ensureValidToken, startPolling, stopPolling } from "./avito-sync";
+import { syncAccount, ensureValidToken, startPolling, stopPolling, getPollingHealth } from "./avito-sync";
 import { generateBotResponse, sendTelegramNotification } from "./bot-engine";
 
 export const appRouter = router({
@@ -361,6 +361,10 @@ export const appRouter = router({
     stopPolling: adminProcedure.mutation(async () => {
       stopPolling();
       return { success: true };
+    }),
+
+    health: publicProcedure.query(async () => {
+      return getPollingHealth();
     }),
   }),
 

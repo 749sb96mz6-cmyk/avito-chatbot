@@ -49,7 +49,7 @@ describe("avito-api", () => {
 
       await expect(
         getAccessToken("bad-id", "bad-secret")
-      ).rejects.toThrow("Avito token error: 401");
+      ).rejects.toThrow("HTTP 401");
     });
   });
 
@@ -85,7 +85,7 @@ describe("avito-api", () => {
       });
 
       await expect(getChats("user-123", "bad-token")).rejects.toThrow(
-        "Avito getChats error: 403"
+        "HTTP 403"
       );
     });
   });
@@ -160,7 +160,7 @@ describe("avito-api", () => {
 
       await expect(
         sendMessage("user-123", "chat-1", "test", "token-abc")
-      ).rejects.toThrow("Avito sendMessage error: 400");
+      ).rejects.toThrow("HTTP 400");
     });
   });
 });

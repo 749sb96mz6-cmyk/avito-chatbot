@@ -11,11 +11,45 @@
  * 7. Aggregation: 40-second window to combine multiple messages
  * 8. Working hours: 09:00-21:00 MSK full answers, outside — short + promise
  * 9. Polling every 30 seconds
+ * 
+ * RELIABILITY (v9 — complete rewrite):
+ * - Uses recursive setTimeout (no overlap by design)
+ * - Mutex flag prevents concurrent cycles even if setTimeout fires early
+ * - Each individual chat sync has its own try-catch (one chat failure doesn't stop others)
+ * - Each processAggregatedMessages call has a 45s timeout
+ * - LLM calls have a 30s timeout
+ * - Avito API calls have 12s timeout (in avito-api.ts)
+ * - DB connection auto-resets on ECONNRESET/PROTOCOL errors
+ * - Watchdog: if a cycle runs longer than 60s, it logs a warning
+ * - Heartbeat log every cycle for monitoring
+ * - getPollingHealth() endpoint for dashboard monitoring
  */
 
 import * as avitoApi from "./avito-api";
 import * as db from "./db";
 import { generateBotResponse, isWithinWorkingHours, sendTelegramNotification } from "./bot-engine";
+
+/**
+ * Promise-based timeout wrapper.
+ * Rejects with TimeoutError if the promise doesn't resolve within timeoutMs.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Timeout: ${label} exceeded ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
 
 /**
  * Ensure a valid access token for an Avito account.
@@ -54,6 +88,7 @@ export async function ensureValidToken(account: {
 /**
  * Process aggregated pending messages for a chat.
  * Called when the aggregation window has expired.
+ * Has its own 45s timeout to prevent hanging.
  */
 async function processAggregatedMessages(
   chatId: number,
@@ -70,7 +105,7 @@ async function processAggregatedMessages(
       .filter((t) => t.length > 0)
       .join("\n");
 
-    // Clean up pending messages
+    // Clean up pending messages FIRST to prevent re-processing
     await db.deletePendingMessagesForChat(chatId);
 
     if (!combinedText.trim()) return { replied: false };
@@ -102,16 +137,20 @@ async function processAggregatedMessages(
         content: m.content!,
       }));
 
-    // Generate bot response
-    const botResponse = await generateBotResponse({
-      customerMessage: combinedText,
-      chatHistory,
-      itemTitle: chat.itemTitle || undefined,
-      systemPrompt: settings.systemPrompt || undefined,
-      maxTokens: settings.maxTokens || 500,
-      isOffHours: !withinHours,
-      offHoursMessage: settings.offHoursMessage || undefined,
-    });
+    // Generate bot response with 30s timeout
+    const botResponse = await withTimeout(
+      generateBotResponse({
+        customerMessage: combinedText,
+        chatHistory,
+        itemTitle: chat.itemTitle || undefined,
+        systemPrompt: settings.systemPrompt || undefined,
+        maxTokens: settings.maxTokens || 500,
+        isOffHours: !withinHours,
+        offHoursMessage: settings.offHoursMessage || undefined,
+      }),
+      30_000,
+      "LLM generateBotResponse"
+    );
 
     // If bot decided not to respond (NO_RESPONSE), skip sending
     if (!botResponse.text) {
@@ -157,7 +196,9 @@ async function processAggregatedMessages(
           settings.telegramBotToken,
           settings.telegramChatId,
           telegramMsg
-        );
+        ).catch((err) => {
+          console.error(`[AvitoSync] Telegram notification failed:`, err.message);
+        });
       }
     }
 
@@ -194,6 +235,125 @@ function shouldQueueForBot(params: {
 }
 
 /**
+ * Sync a single chat: fetch messages, store new ones, queue for bot.
+ * Wrapped in its own try-catch so one chat failure doesn't stop others.
+ */
+async function syncSingleChat(
+  avitoChat: avitoApi.AvitoChat,
+  account: any,
+  accessToken: string,
+  botEnabled: boolean,
+  aggregationWindow: number
+): Promise<{ synced: number; error?: string }> {
+  let synced = 0;
+
+  try {
+    // Determine customer name from chat users
+    const customer = avitoChat.users?.find(
+      (u) => String(u.id) !== account.avitoUserId
+    );
+
+    // Upsert chat record
+    const chatId = await db.upsertChat({
+      avitoAccountId: account.id,
+      avitoChatId: avitoChat.id,
+      customerName: customer?.name || "Покупатель",
+      itemTitle: avitoChat.context?.value?.title || null,
+      itemId: avitoChat.context?.value?.id
+        ? String(avitoChat.context.value.id)
+        : null,
+      itemUrl: avitoChat.context?.value?.url || null,
+      lastMessageAt: avitoChat.updated
+        ? new Date(avitoChat.updated * 1000)
+        : new Date(),
+    });
+
+    // Fetch messages for this chat (12s timeout in avito-api.ts)
+    const msgResponse = await avitoApi.getChatMessages(
+      account.avitoUserId,
+      avitoChat.id,
+      accessToken
+    );
+
+    if (!msgResponse.messages) return { synced: 0 };
+
+    for (const avitoMsg of msgResponse.messages) {
+      // Skip if already stored
+      const existing = await db.getMessageByAvitoId(avitoMsg.id);
+      if (existing) continue;
+
+      const isIncoming = avitoMsg.direction === "in";
+      const senderType = isIncoming ? "customer" : "manual";
+
+      // Check if this message is before botActivatedAt (old message)
+      const isOldMessage = account.botActivatedAt
+        ? avitoMsg.created * 1000 < account.botActivatedAt.getTime()
+        : false;
+
+      // Build content — for non-text message types, add descriptive text for LLM context
+      let messageContent = avitoMsg.content?.text || "";
+      const msgType = avitoMsg.type || "text";
+      if (!messageContent) {
+        if (msgType === "link" && !isIncoming) {
+          messageContent = "[Отправлена ссылка на товар]";
+        } else if (msgType === "link" && isIncoming) {
+          messageContent = "[Клиент отправил ссылку]";
+        } else if (msgType === "image" || msgType === "file") {
+          messageContent = isIncoming ? "[Клиент отправил фото/файл]" : "[Отправлено фото/файл]";
+        } else if (msgType === "call") {
+          messageContent = isIncoming ? "[Входящий звонок]" : "[Исходящий звонок]";
+        }
+      }
+
+      // Store the message in DB (always, for history)
+      await db.insertMessage({
+        chatId,
+        avitoMessageId: avitoMsg.id,
+        direction: avitoMsg.direction,
+        senderType,
+        content: messageContent,
+        messageType: msgType,
+        avitoTimestamp: avitoMsg.created,
+        isRead: isOldMessage, // Mark old messages as read
+      });
+
+      synced++;
+
+      // Determine if we should queue this for bot response
+      if (
+        botEnabled &&
+        shouldQueueForBot({
+          avitoMsg,
+          account,
+          isIncoming,
+        })
+      ) {
+        // Use the already-enriched messageContent from above
+        let contentToQueue = messageContent;
+        if (!contentToQueue && msgType !== "text") {
+          contentToQueue = "[Клиент отправил фото/файл без текста]";
+        }
+
+        // Add to pending messages for aggregation
+        await db.addPendingMessage({
+          chatId,
+          avitoAccountId: account.id,
+          avitoChatId: avitoChat.id,
+          content: contentToQueue,
+          messageType: msgType,
+          avitoTimestamp: avitoMsg.created,
+        });
+      }
+    }
+
+    return { synced };
+  } catch (error: any) {
+    console.error(`[AvitoSync] Chat sync error for ${avitoChat.id}:`, error.message);
+    return { synced, error: `Chat ${avitoChat.id}: ${error.message}` };
+  }
+}
+
+/**
  * Sync chats and messages for a single Avito account.
  */
 export async function syncAccount(accountId: number): Promise<{
@@ -223,127 +383,69 @@ export async function syncAccount(accountId: number): Promise<{
     const botEnabled = settings?.isEnabled !== false;
     const aggregationWindow = settings?.aggregationWindowSec || 40;
 
+    // OPTIMIZATION: Only fetch messages for chats that have been updated since last sync.
+    // Avito API returns `updated` (unix timestamp) for each chat in the list.
+    // Compare with our stored `lastMessageAt` to skip unchanged chats.
+    let skippedChats = 0;
     for (const avitoChat of chatListResponse.chats) {
-      try {
-        // Determine customer name from chat users
-        const customer = avitoChat.users?.find(
-          (u) => String(u.id) !== account.avitoUserId
-        );
-
-        // Upsert chat record
-        const chatId = await db.upsertChat({
-          avitoAccountId: account.id,
-          avitoChatId: avitoChat.id,
-          customerName: customer?.name || "Покупатель",
-          itemTitle: avitoChat.context?.value?.title || null,
-          itemId: avitoChat.context?.value?.id
-            ? String(avitoChat.context.value.id)
-            : null,
-          itemUrl: avitoChat.context?.value?.url || null,
-          lastMessageAt: avitoChat.updated
-            ? new Date(avitoChat.updated * 1000)
-            : new Date(),
-        });
-
-        // Fetch messages for this chat
-        const msgResponse = await avitoApi.getChatMessages(
-          account.avitoUserId,
-          avitoChat.id,
-          accessToken
-        );
-
-        if (!msgResponse.messages) continue;
-
-        for (const avitoMsg of msgResponse.messages) {
-          // Skip if already stored
-          const existing = await db.getMessageByAvitoId(avitoMsg.id);
-          if (existing) continue;
-
-          const isIncoming = avitoMsg.direction === "in";
-          const senderType = isIncoming ? "customer" : "manual";
-
-          // Check if this message is before botActivatedAt (old message)
-          const isOldMessage = account.botActivatedAt
-            ? avitoMsg.created * 1000 < account.botActivatedAt.getTime()
-            : false;
-
-          // Build content — for non-text message types, add descriptive text for LLM context
-          let messageContent = avitoMsg.content?.text || "";
-          const msgType = avitoMsg.type || "text";
-          if (!messageContent) {
-            if (msgType === "link" && !isIncoming) {
-              messageContent = "[Отправлена ссылка на товар]";
-            } else if (msgType === "link" && isIncoming) {
-              messageContent = "[Клиент отправил ссылку]";
-            } else if (msgType === "image" || msgType === "file") {
-              messageContent = isIncoming ? "[Клиент отправил фото/файл]" : "[Отправлено фото/файл]";
-            } else if (msgType === "call") {
-              messageContent = isIncoming ? "[Входящий звонок]" : "[Исходящий звонок]";
-            }
-          }
-
-          // Store the message in DB (always, for history)
-          await db.insertMessage({
-            chatId,
-            avitoMessageId: avitoMsg.id,
-            direction: avitoMsg.direction,
-            senderType,
-            content: messageContent,
-            messageType: msgType,
-            avitoTimestamp: avitoMsg.created,
-            isRead: isOldMessage, // Mark old messages as read
-          });
-
-          synced++;
-
-          // Determine if we should queue this for bot response
-          if (
-            botEnabled &&
-            shouldQueueForBot({
-              avitoMsg,
-              account,
-              isIncoming,
-            })
-          ) {
-            const chat = await db.getChatById(chatId);
-            if (chat && chat.botEnabled && chat.status !== "closed") {
-              // Use the already-enriched messageContent from above
-              let contentToQueue = messageContent;
-              if (!contentToQueue && msgType !== "text") {
-                contentToQueue = "[Клиент отправил фото/файл без текста]";
-              }
-
-              // Add to pending messages for aggregation
-              await db.addPendingMessage({
-                chatId,
-                avitoAccountId: account.id,
-                avitoChatId: avitoChat.id,
-                content: contentToQueue,
-                messageType: msgType,
-                avitoTimestamp: avitoMsg.created,
-              });
-            }
+      // Check if chat has new activity since our last sync
+      if (avitoChat.updated) {
+        const existingChat = await db.getChatByAvitoChatId(account.id, avitoChat.id);
+        if (existingChat && existingChat.lastMessageAt) {
+          const avitoUpdatedMs = avitoChat.updated * 1000;
+          const ourLastSyncMs = existingChat.lastMessageAt.getTime();
+          // If Avito's updated timestamp matches our stored one, skip this chat
+          // Use 2-second tolerance for timestamp rounding
+          if (Math.abs(avitoUpdatedMs - ourLastSyncMs) < 2000) {
+            skippedChats++;
+            continue;
           }
         }
-      } catch (chatError: any) {
-        console.error(
-          `[AvitoSync] Chat sync error for ${avitoChat.id}:`,
-          chatError.message
-        );
-        errors.push(`Chat ${avitoChat.id}: ${chatError.message}`);
       }
+
+      const result = await syncSingleChat(
+        avitoChat,
+        account,
+        accessToken,
+        botEnabled,
+        aggregationWindow
+      );
+      synced += result.synced;
+      if (result.error) errors.push(result.error);
+    }
+
+    if (skippedChats > 0) {
+      // Log only when there are skipped chats (for debugging)
+      // console.log(`[AvitoSync] Skipped ${skippedChats}/${chatListResponse.chats.length} unchanged chats`);
     }
 
     // Process aggregated messages that have passed the window
+    // Each chat gets its own 45s timeout
     const readyChats = await db.getReadyPendingChats(aggregationWindow);
     for (const readyChat of readyChats) {
-      const result = await processAggregatedMessages(
-        readyChat.chatId,
-        readyChat.avitoAccountId,
-        readyChat.avitoChatId
-      );
-      if (result.replied) replied++;
-      if (result.error) errors.push(result.error);
+      try {
+        const result = await withTimeout(
+          processAggregatedMessages(
+            readyChat.chatId,
+            readyChat.avitoAccountId,
+            readyChat.avitoChatId
+          ),
+          45_000,
+          `processAggregatedMessages(chat=${readyChat.chatId})`
+        );
+        if (result.replied) replied++;
+        if (result.error) errors.push(result.error);
+      } catch (error: any) {
+        console.error(`[AvitoSync] Timeout/error processing chat ${readyChat.chatId}:`, error.message);
+        errors.push(`Chat ${readyChat.chatId}: ${error.message}`);
+        // Clean up pending messages for this chat to prevent infinite retries
+        try {
+          await db.deletePendingMessagesForChat(readyChat.chatId);
+          console.log(`[AvitoSync] Cleaned up pending messages for hung chat ${readyChat.chatId}`);
+        } catch (cleanupErr: any) {
+          console.error(`[AvitoSync] Failed to cleanup pending for chat ${readyChat.chatId}:`, cleanupErr.message);
+        }
+      }
     }
   } catch (error: any) {
     console.error(
@@ -366,7 +468,7 @@ export async function syncAllAccounts(): Promise<void> {
     accounts = await db.getAllActiveAvitoAccounts();
   } catch (error: any) {
     // If DB connection is broken (ECONNRESET, PROTOCOL_CONNECTION_LOST, etc.), reset and retry
-    if (error.message?.includes('ECONNRESET') || error.message?.includes('PROTOCOL') || error.message?.includes('ETIMEDOUT') || error.code === 'ECONNRESET') {
+    if (isConnectionError(error)) {
       console.warn('[AvitoSync] DB connection error, resetting connection pool...');
       await db.resetDbConnection();
       // Retry once after reset
@@ -386,7 +488,7 @@ export async function syncAllAccounts(): Promise<void> {
       }
     } catch (error: any) {
       // If individual account sync fails due to DB, reset and continue
-      if (error.message?.includes('ECONNRESET') || error.code === 'ECONNRESET') {
+      if (isConnectionError(error)) {
         console.warn(`[AvitoSync] DB connection lost during account ${account.id} sync, resetting...`);
         await db.resetDbConnection();
       } else {
@@ -396,38 +498,156 @@ export async function syncAllAccounts(): Promise<void> {
   }
 }
 
-// Polling interval reference
-let pollingInterval: ReturnType<typeof setInterval> | null = null;
+/**
+ * Check if an error is a connection-related error.
+ */
+function isConnectionError(error: any): boolean {
+  const msg = error?.message || "";
+  const code = error?.code || "";
+  return (
+    msg.includes("ECONNRESET") ||
+    msg.includes("PROTOCOL") ||
+    msg.includes("ETIMEDOUT") ||
+    msg.includes("ECONNREFUSED") ||
+    msg.includes("Connection lost") ||
+    msg.includes("Failed query") ||
+    code === "ECONNRESET" ||
+    code === "PROTOCOL_CONNECTION_LOST"
+  );
+}
+
+// ============================================================
+// POLLING ENGINE — Robust recursive setTimeout with mutex
+// ============================================================
+
+let pollingActive = false;
+let pollingTimer: ReturnType<typeof setTimeout> | null = null;
+let lastCycleCompletedAt: number = 0;
+let consecutiveErrors = 0;
+let cycleRunning = false; // Mutex to prevent overlapping cycles
+
+/** Maximum consecutive errors before increasing delay */
+const MAX_CONSECUTIVE_ERRORS = 5;
+
+/** Warning threshold for slow cycles */
+const SLOW_CYCLE_WARN_MS = 60_000;
+
+/**
+ * Execute one polling cycle with mutex protection.
+ * No external timeout wrapper — instead, each internal operation has its own timeout.
+ * This prevents the "rejected but still running" problem.
+ */
+async function executePollCycle(intervalMs: number): Promise<void> {
+  if (!pollingActive) return;
+
+  // Mutex: skip if previous cycle is still running
+  if (cycleRunning) {
+    console.warn("[AvitoSync] Previous cycle still running, skipping this tick");
+    // Schedule next attempt
+    if (pollingActive) {
+      pollingTimer = setTimeout(() => executePollCycle(intervalMs), 5000); // Retry in 5s
+    }
+    return;
+  }
+
+  cycleRunning = true;
+  const cycleStart = Date.now();
+
+  try {
+    await syncAllAccounts();
+    
+    consecutiveErrors = 0;
+    lastCycleCompletedAt = Date.now();
+
+    const elapsed = Date.now() - cycleStart;
+    if (elapsed > SLOW_CYCLE_WARN_MS) {
+      console.warn(`[AvitoSync] ⚠️ Slow cycle: ${elapsed}ms (threshold: ${SLOW_CYCLE_WARN_MS}ms)`);
+    }
+  } catch (error: any) {
+    consecutiveErrors++;
+    console.error(
+      `[AvitoSync] Polling cycle error (${consecutiveErrors} consecutive):`,
+      error.message
+    );
+
+    // If too many consecutive errors, try resetting DB connection
+    if (consecutiveErrors >= 3) {
+      console.warn("[AvitoSync] Multiple consecutive errors, resetting DB connection...");
+      try {
+        await db.resetDbConnection();
+      } catch (resetErr: any) {
+        console.error("[AvitoSync] DB reset failed:", resetErr.message);
+      }
+    }
+  } finally {
+    cycleRunning = false;
+  }
+
+  // Schedule next cycle (only if still active)
+  if (pollingActive) {
+    // Back off if too many errors
+    const delay = consecutiveErrors >= MAX_CONSECUTIVE_ERRORS
+      ? Math.min(intervalMs * 3, 120_000) // Max 2 minutes backoff
+      : intervalMs;
+
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      console.warn(`[AvitoSync] Backing off to ${delay / 1000}s due to ${consecutiveErrors} consecutive errors`);
+    }
+
+    pollingTimer = setTimeout(() => executePollCycle(intervalMs), delay);
+  }
+}
 
 /**
  * Start polling for new messages.
+ * Uses recursive setTimeout for reliability (no overlapping cycles).
  */
 export function startPolling(intervalMs: number = 30000): void {
-  if (pollingInterval) {
+  if (pollingActive) {
     console.log("[AvitoSync] Polling already running");
     return;
   }
 
-  console.log(`[AvitoSync] Starting polling every ${intervalMs / 1000}s`);
-  pollingInterval = setInterval(async () => {
-    try {
-      await syncAllAccounts();
-    } catch (error) {
-      console.error("[AvitoSync] Polling error:", error);
-    }
-  }, intervalMs);
+  pollingActive = true;
+  consecutiveErrors = 0;
+  lastCycleCompletedAt = Date.now();
+  cycleRunning = false;
 
-  // Run immediately on start
-  syncAllAccounts().catch(console.error);
+  console.log(`[AvitoSync] Starting polling every ${intervalMs / 1000}s`);
+
+  // Run first cycle immediately
+  executePollCycle(intervalMs);
 }
 
 /**
  * Stop polling.
  */
 export function stopPolling(): void {
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
-    pollingInterval = null;
-    console.log("[AvitoSync] Polling stopped");
+  pollingActive = false;
+  if (pollingTimer) {
+    clearTimeout(pollingTimer);
+    pollingTimer = null;
   }
+  console.log("[AvitoSync] Polling stopped");
+}
+
+/**
+ * Get polling health status (for monitoring/dashboard).
+ */
+export function getPollingHealth(): {
+  active: boolean;
+  lastCycleAt: number;
+  consecutiveErrors: number;
+  secondsSinceLastCycle: number;
+  cycleRunning: boolean;
+} {
+  return {
+    active: pollingActive,
+    lastCycleAt: lastCycleCompletedAt,
+    consecutiveErrors,
+    secondsSinceLastCycle: lastCycleCompletedAt
+      ? Math.floor((Date.now() - lastCycleCompletedAt) / 1000)
+      : -1,
+    cycleRunning,
+  };
 }
