@@ -113,6 +113,12 @@ async function processAggregatedMessages(
       offHoursMessage: settings.offHoursMessage || undefined,
     });
 
+    // If bot decided not to respond (NO_RESPONSE), skip sending
+    if (!botResponse.text) {
+      console.log(`[AvitoSync] Chat ${chatId}: NO_RESPONSE — bot decided not to reply (conversation ended)`);
+      return { replied: false };
+    }
+
     // Add delay to seem more natural (2-5 seconds)
     const delay = settings.responseDelayMs || 3000;
     await new Promise((resolve) => setTimeout(resolve, delay));

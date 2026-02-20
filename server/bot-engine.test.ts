@@ -392,6 +392,54 @@ describe("generateBotResponse", () => {
     expect(systemMsg?.content).toContain("Не начинай новую тему");
   });
 
+  // NO_RESPONSE tests for conversation-ending words
+
+  it("returns empty text (NO_RESPONSE) when LLM signals no response needed", async () => {
+    mockInvokeLLM.mockResolvedValueOnce({
+      choices: [{ message: { content: "[NO_RESPONSE]" } }],
+    });
+
+    const response = await generateBotResponse({
+      customerMessage: "Хорошо",
+      chatHistory: [
+        { role: "user", content: "Спасибо" },
+        { role: "assistant", content: "Пожалуйста! Обращайтесь, если будут вопросы." },
+      ],
+    });
+
+    expect(response.text).toBe("");
+    expect(response.needsManager).toBe(false);
+  });
+
+  it("includes NO_RESPONSE rules in system prompt for conversation endings", async () => {
+    await generateBotResponse({
+      customerMessage: "Ок",
+      chatHistory: [
+        { role: "user", content: "Спасибо" },
+        { role: "assistant", content: "Пожалуйста! Обращайтесь." },
+      ],
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("[NO_RESPONSE]");
+    expect(systemMsg?.content).toContain("Хорошо");
+    expect(systemMsg?.content).toContain("НЕ ОТВЕЧАЙ");
+  });
+
+  it("handles NO_RESPONSE mixed with other text", async () => {
+    mockInvokeLLM.mockResolvedValueOnce({
+      choices: [{ message: { content: "Okay, [NO_RESPONSE]" } }],
+    });
+
+    const response = await generateBotResponse({
+      customerMessage: "Ладно",
+    });
+
+    expect(response.text).toBe("");
+    expect(response.needsManager).toBe(false);
+  });
+
   it("includes manager context rules in system prompt", async () => {
     await generateBotResponse({
       customerMessage: "Спасибо",
