@@ -349,6 +349,12 @@ export async function getConversationHistory(chatId: number, limit: number = 20)
 
 // ==================== PENDING MESSAGES (Aggregation) ====================
 
+export async function getAllPendingMessages(): Promise<PendingMessage[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(pendingMessages).orderBy(desc(pendingMessages.createdAt));
+}
+
 export async function addPendingMessage(data: InsertPendingMessage): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -372,20 +378,20 @@ export async function getReadyPendingChats(windowSeconds: number): Promise<{ cha
   const db = await getDb();
   if (!db) return [];
   
-  const cutoff = new Date(Date.now() - windowSeconds * 1000);
+  // Use raw SQL for reliable timezone-independent comparison
+  // Drizzle's parameter binding with HAVING clause can cause issues
+  const cutoffUnix = Math.floor(Date.now() / 1000) - windowSeconds;
   
-  // Get distinct chats that have pending messages where the LATEST pending message
-  // is older than the aggregation window (meaning user stopped typing)
   const result = await db
     .select({
       chatId: pendingMessages.chatId,
       avitoAccountId: pendingMessages.avitoAccountId,
       avitoChatId: pendingMessages.avitoChatId,
-      latestAt: sql<Date>`MAX(${pendingMessages.createdAt})`,
+      latestUnix: sql<number>`MAX(UNIX_TIMESTAMP(${pendingMessages.createdAt}))`,
     })
     .from(pendingMessages)
     .groupBy(pendingMessages.chatId, pendingMessages.avitoAccountId, pendingMessages.avitoChatId)
-    .having(sql`MAX(${pendingMessages.createdAt}) <= ${cutoff}`);
+    .having(sql.raw(`MAX(UNIX_TIMESTAMP(createdAt)) <= ${cutoffUnix}`));
   
   return result.map(r => ({
     chatId: r.chatId,

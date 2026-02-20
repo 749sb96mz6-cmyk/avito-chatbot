@@ -189,7 +189,7 @@ describe("generateBotResponse", () => {
     expect(systemMsg?.content).toContain("Фара левая Toyota Camry 2018");
   });
 
-  // NEW TESTS: Conversation context and greeting deduplication
+  // Conversation context and greeting deduplication tests
 
   it("includes greeting rules in default system prompt", async () => {
     await generateBotResponse({
@@ -223,7 +223,6 @@ describe("generateBotResponse", () => {
 
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
-    // Should contain the original but NOT the appended duplicate
     const occurrences = (systemMsg?.content.match(/Здоровайся ТОЛЬКО/g) || []).length;
     expect(occurrences).toBe(1);
   });
@@ -235,14 +234,13 @@ describe("generateBotResponse", () => {
       chatHistory: [
         { role: "user", content: "Привет" },
         { role: "assistant", content: "Здравствуйте! Чем могу помочь?" },
-        { role: "user", content: customerMsg }, // same as customerMessage
+        { role: "user", content: customerMsg },
       ],
     });
 
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     // system + 3 history = 4 messages (NOT 5 with duplicate)
     expect(callArgs.messages.length).toBe(4);
-    // Verify the last message is the customer message (from history)
     const lastMsg = callArgs.messages[callArgs.messages.length - 1];
     expect(lastMsg.role).toBe("user");
     expect(lastMsg.content).toBe(customerMsg);
@@ -279,7 +277,6 @@ describe("generateBotResponse", () => {
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     // system + 15 (sliced history) + 1 current = 17 messages
     expect(callArgs.messages.length).toBe(17);
-    // First history message should be from the end of the array (last 15)
     expect(callArgs.messages[1].content).toBe("Message 10");
   });
 
@@ -297,13 +294,48 @@ describe("generateBotResponse", () => {
     const callArgs = mockInvokeLLM.mock.calls[0][0];
     // system + 4 history + 1 current = 6 messages
     expect(callArgs.messages.length).toBe(6);
-    // Verify the order is correct
     expect(callArgs.messages[1].role).toBe("user");
     expect(callArgs.messages[2].role).toBe("assistant");
     expect(callArgs.messages[3].role).toBe("user");
     expect(callArgs.messages[4].role).toBe("assistant");
     expect(callArgs.messages[5].role).toBe("user");
     expect(callArgs.messages[5].content).toBe("А можно по VIN проверить?");
+  });
+
+  // Call handling tests
+
+  it("includes call handling rules in default system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Входящий звонок 1 минута",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("ЗВОНКИ");
+    expect(systemMsg?.content).toContain("Входящий звонок");
+    expect(systemMsg?.content).toContain("Пропущенный звонок");
+  });
+
+  it("system prompt instructs to follow up after incoming call", async () => {
+    await generateBotResponse({
+      customerMessage: "Входящий звонок 2 минуты",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("пообщались по телефону");
+    expect(systemMsg?.content).toContain("Остались ли у вас");
+  });
+
+  it("system prompt instructs to handle missed calls with callback promise", async () => {
+    await generateBotResponse({
+      customerMessage: "Пропущенный звонок",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("перезвоним");
+    expect(systemMsg?.content).toContain("NEEDS_MANAGER: Пропущенный звонок");
   });
 });
 

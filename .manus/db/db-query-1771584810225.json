@@ -1,0 +1,65 @@
+{
+  "query": "SELECT * FROM pending_messages ORDER BY createdAt DESC LIMIT 20;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3J1p6DWuZuycUju.root --database 5cBEhbc7R8PnfAoRyL6YGT --execute SELECT * FROM pending_messages ORDER BY createdAt DESC LIMIT 20;",
+  "rows": [
+    {
+      "id": "9",
+      "chatId": "30008",
+      "avitoAccountId": "1",
+      "avitoChatId": "u2i-APv6WdTVQXYEdL9HaiQVAA",
+      "content": "Здравствуйте, трещины, крепеж?",
+      "messageType": "text",
+      "avitoTimestamp": "1771584122",
+      "firstMessageAt": "2026-02-20 10:42:28",
+      "createdAt": "2026-02-20 10:42:28"
+    },
+    {
+      "id": "7",
+      "chatId": "30007",
+      "avitoAccountId": "1",
+      "avitoChatId": "u2i-qRZABKVsCu0zyWtLyawjQQ",
+      "content": "Когда вернется",
+      "messageType": "text",
+      "avitoTimestamp": "1771583570",
+      "firstMessageAt": "2026-02-20 10:32:58",
+      "createdAt": "2026-02-20 10:32:58"
+    },
+    {
+      "id": "8",
+      "chatId": "30007",
+      "avitoAccountId": "1",
+      "avitoChatId": "u2i-qRZABKVsCu0zyWtLyawjQQ",
+      "content": "Сможете повторно отправить?",
+      "messageType": "text",
+      "avitoTimestamp": "1771583565",
+      "firstMessageAt": "2026-02-20 10:32:58",
+      "createdAt": "2026-02-20 10:32:58"
+    },
+    {
+      "id": "6",
+      "chatId": "30007",
+      "avitoAccountId": "1",
+      "avitoChatId": "u2i-qRZABKVsCu0zyWtLyawjQQ",
+      "content": "…",
+      "messageType": "text",
+      "avitoTimestamp": "1771583572",
+      "firstMessageAt": "2026-02-20 10:32:58",
+      "createdAt": "2026-02-20 10:32:58"
+    },
+    {
+      "id": "5",
+      "chatId": "30007",
+      "avitoAccountId": "1",
+      "avitoChatId": "u2i-qRZABKVsCu0zyWtLyawjQQ",
+      "content": "Здравствуйте, я эту почту России не навижу уже , они не говорят о том что посылка пришла",
+      "messageType": "text",
+      "avitoTimestamp": "1771583485",
+      "firstMessageAt": "2026-02-20 10:31:58",
+      "createdAt": "2026-02-20 10:31:58"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tchatId\tavitoAccountId\tavitoChatId\tcontent\tmessageType\tavitoTimestamp\tfirstMessageAt\tcreatedAt\n9\t30008\t1\tu2i-APv6WdTVQXYEdL9HaiQVAA\tЗдравствуйте, трещины, крепеж?\ttext\t1771584122\t2026-02-20 10:42:28\t2026-02-20 10:42:28\n7\t30007\t1\tu2i-qRZABKVsCu0zyWtLyawjQQ\tКогда вернется\ttext\t1771583570\t2026-02-20 10:32:58\t2026-02-20 10:32:58\n8\t30007\t1\tu2i-qRZABKVsCu0zyWtLyawjQQ\tСможете повторно отправить?\ttext\t1771583565\t2026-02-20 10:32:58\t2026-02-20 10:32:58\n6\t30007\t1\tu2i-qRZABKVsCu0zyWtLyawjQQ\t…\ttext\t1771583572\t2026-02-20 10:32:58\t2026-02-20 10:32:58\n5\t30007\t1\tu2i-qRZABKVsCu0zyWtLyawjQQ\tЗдравствуйте, я эту почту России не навижу уже , они не говорят о том что посылка пришла\ttext\t1771583485\t2026-02-20 10:31:58\t2026-02-20 10:31:58\n",
+  "stderr": "",
+  "execution_time_ms": 366
+}
