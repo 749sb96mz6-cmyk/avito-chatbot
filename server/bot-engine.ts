@@ -1,28 +1,76 @@
 /**
  * Bot engine: generates AI responses for incoming Avito messages.
  * Uses the platform's built-in LLM integration.
+ * Includes logic for escalation to manager and working hours.
  */
 
 import { invokeLLM } from "./_core/llm";
 
-const DEFAULT_SYSTEM_PROMPT = `Ты — вежливый и профессиональный продавец-консультант б/у автозапчастей от страховых компаний на Авито.
+const DEFAULT_SYSTEM_PROMPT = `Ты — менеджер-консультант магазина б/у автозапчастей от страховых компаний на Авито.
+ВАЖНО: Ты НЕ бот. Ты пишешь КАК ЖИВОЙ МЕНЕДЖЕР. Никогда не раскрывай что ты бот/AI.
+Пиши простым текстом без markdown (без **, ##, - списков). Это мессенджер Авито.
 
-Основные правила:
-1. Отвечай кратко, по делу, дружелюбно. Используй разговорный, но вежливый стиль.
-2. Запчасти в основном с дефектами (после ДТП, страховых случаев). Честно описывай состояние.
-3. Если клиент спрашивает о наличии конкретной запчасти — предложи уточнить марку, модель и год авто.
-4. Если не знаешь ответ — предложи связаться по телефону или написать подробнее.
-5. Не придумывай цены и наличие — если информации нет, скажи что нужно уточнить.
-6. Предлагай отправку по России, если клиент из другого города.
-7. Отвечай только на русском языке.
-8. Не используй markdown-форматирование (жирный, курсив, списки) — пиши простым текстом, так как это мессенджер Авито.
+ПРАВИЛА ОТВЕТОВ:
 
-Примеры типичных вопросов:
-- "Есть ли бампер на Toyota Camry 2018?"
-- "Какая цена?"
-- "В каком состоянии?"
-- "Отправляете в другой город?"
-- "Можно торг?"`;
+1. НАЛИЧИЕ ТОВАРА:
+   - Если объявление активно — товар в наличии (но уточнить на складе может менеджер).
+   - Количество штук — только менеджер может сказать.
+   - Сегодня можно приехать и купить.
+   - Доставка в другой город — отправляем ПН, СР, ПТ (не день в день).
+
+2. ЦЕНА:
+   - Цена актуальная, указана в объявлении.
+   - Дополнительных скидок нет. Торг не предусмотрен.
+
+3. ДОСТАВКА:
+   - ТОЛЬКО через Авито Доставку!
+   - Стоимость и сроки рассчитываются автоматически при добавлении товара в корзину.
+   - Не называй точные сроки доставки — их покажет Авито при оформлении.
+   - Не предлагай доставку вне Авито.
+
+4. ОПЛАТА И ДОКУМЕНТЫ:
+   - Безнал, НДС, счёт, договор, УПД — НЕ предоставляем.
+   - Оплата только через Авито.
+
+5. СОСТОЯНИЕ ТОВАРА:
+   - Состояние указано в объявлении.
+   - В основном б/у запчасти (после ДТП, страховых случаев), но есть и новые.
+   - Комплектность видна на фото.
+
+6. СОВМЕСТИМОСТЬ:
+   - Совместимость указана в объявлении.
+   - Если нужно проверить по VIN — попроси VIN-номер и передай менеджеру.
+
+7. ГАРАНТИЯ:
+   - 30 дней на все товары.
+   - Если доставка — 30 дней с момента получения.
+
+8. САМОВЫВОЗ:
+   - Адрес указан в объявлении.
+   - Магазин работает ежедневно 9:00-21:00, без обеда и выходных.
+   - Покупка ТОЛЬКО через кнопку "Купить с самовывозом" на Авито.
+
+9. ПОКУПКА:
+   - Вся покупка только через Авито (и самовывоз тоже через кнопку на Авито).
+
+ЗАПРЕТЫ:
+- Не обещай скидки и торг
+- Не предлагай доставку вне Авито
+- Не называй точные сроки доставки
+- Не давай юридически рискованных обещаний
+- Не раскрывай внутренние данные (номера сотрудников, адрес склада, если не в объявлении)
+- Не спорь с клиентом. При агрессии — вежливо предложи подключить менеджера
+- Не отправляй клиента звонить. Если не знаешь ответ — скажи "Уточню информацию и вернусь с ответом"
+
+СТИЛЬ:
+- Пиши кратко, по делу, дружелюбно
+- Как живой менеджер, не как робот
+- Русский язык основной. Если клиент пишет на другом языке — отвечай на его языке простыми фразами
+- Не используй эмодзи чрезмерно (максимум 1 на сообщение, и то не обязательно)`;
+
+const OFF_HOURS_ADDENDUM = `\n\nСЕЙЧАС НЕРАБОЧЕЕ ВРЕМЯ. Отвечай коротко, по существу. В конце добавь: "Более подробно смогу ответить в рабочее время с 9:00 до 21:00 по Москве."`;
+
+const INACTIVE_ITEM_ADDENDUM = `\n\nОБЪЯВЛЕНИЕ НЕАКТИВНО. Товар продан или снят с продажи. Сообщи об этом клиенту и предложи помочь с поиском альтернативы.`;
 
 export interface BotContext {
   systemPrompt?: string;
@@ -30,58 +78,173 @@ export interface BotContext {
   customerMessage: string;
   chatHistory?: Array<{ role: "user" | "assistant"; content: string }>;
   itemTitle?: string;
+  isOffHours?: boolean;
+  isItemInactive?: boolean;
+  offHoursMessage?: string;
+  closingMessage?: string;
+}
+
+export interface BotResponse {
+  text: string;
+  needsManager: boolean;
+  managerReason?: string;
 }
 
 /**
- * Generate an AI response for a customer message.
+ * Check if current time is within working hours (Moscow time).
  */
-export async function generateBotResponse(ctx: BotContext): Promise<string> {
-  const systemPrompt = ctx.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+export function isWithinWorkingHours(
+  startStr: string = "09:00",
+  endStr: string = "21:00"
+): boolean {
+  // Get current Moscow time
+  const now = new Date();
+  const moscowOffset = 3 * 60; // UTC+3
+  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const moscowMinutes = (utcMinutes + moscowOffset) % (24 * 60);
 
-  // Build context with item info if available
-  let fullSystemPrompt = systemPrompt;
+  const [startH, startM] = startStr.split(":").map(Number);
+  const [endH, endM] = endStr.split(":").map(Number);
+  const startMinutes = startH * 60 + startM;
+  const endMinutes = endH * 60 + endM;
+
+  return moscowMinutes >= startMinutes && moscowMinutes < endMinutes;
+}
+
+/**
+ * Analyze if the message requires manager escalation.
+ * Returns structured response with escalation info.
+ */
+export async function generateBotResponse(ctx: BotContext): Promise<BotResponse> {
+  const basePrompt = ctx.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+
+  // Build full system prompt with context
+  let fullSystemPrompt = basePrompt;
+
+  if (ctx.isOffHours) {
+    fullSystemPrompt += ctx.offHoursMessage
+      ? `\n\nСЕЙЧАС НЕРАБОЧЕЕ ВРЕМЯ. ${ctx.offHoursMessage}`
+      : OFF_HOURS_ADDENDUM;
+  }
+
+  if (ctx.isItemInactive) {
+    fullSystemPrompt += INACTIVE_ITEM_ADDENDUM;
+  }
+
   if (ctx.itemTitle) {
     fullSystemPrompt += `\n\nТекущее объявление: "${ctx.itemTitle}"`;
   }
 
+  // Add escalation instructions
+  fullSystemPrompt += `\n\nЕСКАЛАЦИЯ НА МЕНЕДЖЕРА:
+Если ситуация требует вмешательства менеджера, в САМОМ КОНЦЕ ответа добавь на отдельной строке тег:
+[NEEDS_MANAGER: причина]
+
+Ситуации для эскалации:
+- Клиент просит позвонить или связаться по телефону
+- Конфликт, негатив, жалоба, агрессия
+- Ты не уверен в ответе и нужна помощь
+- Клиент просит проверить совместимость по VIN
+- Вопрос о количестве на складе
+- Клиент хочет оптовую покупку
+- Любая нестандартная ситуация
+
+Если эскалация не нужна — НЕ добавляй этот тег.`;
+
   // Build message history
-  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+  const llmMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     { role: "system", content: fullSystemPrompt },
   ];
 
-  // Add recent chat history (last 10 messages for context)
+  // Add recent chat history (last 15 messages for context)
   if (ctx.chatHistory && ctx.chatHistory.length > 0) {
-    const recentHistory = ctx.chatHistory.slice(-10);
+    const recentHistory = ctx.chatHistory.slice(-15);
     for (const msg of recentHistory) {
-      messages.push({ role: msg.role, content: msg.content });
+      llmMessages.push({ role: msg.role, content: msg.content });
     }
   }
 
   // Add the current customer message
-  messages.push({ role: "user", content: ctx.customerMessage });
+  llmMessages.push({ role: "user", content: ctx.customerMessage });
 
   try {
     const result = await invokeLLM({
-      messages,
+      messages: llmMessages,
       maxTokens: ctx.maxTokens || 500,
     });
 
+    let responseText = "";
     const responseContent = result.choices?.[0]?.message?.content;
-    if (typeof responseContent === "string") {
-      return responseContent.trim();
-    }
 
-    // Handle array content
-    if (Array.isArray(responseContent)) {
+    if (typeof responseContent === "string") {
+      responseText = responseContent.trim();
+    } else if (Array.isArray(responseContent)) {
       const textParts = responseContent
         .filter((p: any) => p.type === "text")
         .map((p: any) => p.text);
-      return textParts.join("\n").trim();
+      responseText = textParts.join("\n").trim();
     }
 
-    return "Извините, не удалось сформировать ответ. Пожалуйста, напишите позже или позвоните нам.";
+    if (!responseText) {
+      return {
+        text: "Уточню информацию и вернусь с ответом в ближайшее время.",
+        needsManager: true,
+        managerReason: "Бот не смог сгенерировать ответ",
+      };
+    }
+
+    // Parse escalation tag
+    const managerMatch = responseText.match(/\[NEEDS_MANAGER:\s*(.+?)\]\s*$/);
+    let needsManager = false;
+    let managerReason: string | undefined;
+
+    if (managerMatch) {
+      needsManager = true;
+      managerReason = managerMatch[1].trim();
+      // Remove the tag from the response
+      responseText = responseText.replace(/\[NEEDS_MANAGER:\s*.+?\]\s*$/, "").trim();
+    }
+
+    return { text: responseText, needsManager, managerReason };
   } catch (error) {
     console.error("[BotEngine] LLM error:", error);
-    return "Извините, произошла техническая ошибка. Пожалуйста, попробуйте позже.";
+    return {
+      text: "Уточню информацию и вернусь с ответом в ближайшее время.",
+      needsManager: true,
+      managerReason: "Техническая ошибка LLM",
+    };
+  }
+}
+
+/**
+ * Send Telegram notification to manager.
+ */
+export async function sendTelegramNotification(
+  botToken: string,
+  chatId: string,
+  message: string
+): Promise<boolean> {
+  try {
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: "HTML",
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[Telegram] Send error:", errorText);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("[Telegram] Error:", error);
+    return false;
   }
 }

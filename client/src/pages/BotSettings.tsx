@@ -18,6 +18,10 @@ import {
   Pencil,
   X,
   Check,
+  Clock,
+  Bell,
+  Send,
+  AlertTriangle,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
@@ -36,14 +40,31 @@ export default function BotSettings() {
     { enabled: !!activeAccount }
   );
 
+  // Main settings
   const [isEnabled, setIsEnabled] = useState(true);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [greeting, setGreeting] = useState("");
   const [fallbackMessage, setFallbackMessage] = useState("");
-  const [responseDelay, setResponseDelay] = useState(2000);
+  const [responseDelay, setResponseDelay] = useState(3000);
   const [maxTokens, setMaxTokens] = useState(500);
+  const [aggregationWindow, setAggregationWindow] = useState(40);
+
+  // Working hours
+  const [workingHoursStart, setWorkingHoursStart] = useState("09:00");
+  const [workingHoursEnd, setWorkingHoursEnd] = useState("21:00");
+  const [offHoursMessage, setOffHoursMessage] = useState("");
+  const [closingMessage, setClosingMessage] = useState("");
+
+  // Telegram
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramBotToken, setTelegramBotToken] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+
+  // Test
   const [testMessage, setTestMessage] = useState("");
   const [testResponse, setTestResponse] = useState("");
+  const [testNeedsManager, setTestNeedsManager] = useState(false);
+  const [testManagerReason, setTestManagerReason] = useState("");
 
   // Template form
   const [showTemplateForm, setShowTemplateForm] = useState(false);
@@ -60,6 +81,14 @@ export default function BotSettings() {
       setFallbackMessage(settingsQuery.data.fallbackMessage || "");
       setResponseDelay(settingsQuery.data.responseDelayMs);
       setMaxTokens(settingsQuery.data.maxTokens);
+      setAggregationWindow(settingsQuery.data.aggregationWindowSec);
+      setWorkingHoursStart(settingsQuery.data.workingHoursStart);
+      setWorkingHoursEnd(settingsQuery.data.workingHoursEnd);
+      setOffHoursMessage(settingsQuery.data.offHoursMessage || "");
+      setClosingMessage(settingsQuery.data.closingMessage || "");
+      setTelegramEnabled(settingsQuery.data.telegramEnabled);
+      setTelegramBotToken(settingsQuery.data.telegramBotToken || "");
+      setTelegramChatId(settingsQuery.data.telegramChatId || "");
     }
   }, [settingsQuery.data]);
 
@@ -72,7 +101,22 @@ export default function BotSettings() {
   });
 
   const testMutation = trpc.botSettings.testResponse.useMutation({
-    onSuccess: (data) => setTestResponse(data.response),
+    onSuccess: (data) => {
+      setTestResponse(data.response);
+      setTestNeedsManager(data.needsManager ?? false);
+      setTestManagerReason(data.managerReason ?? "");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const testTelegramMutation = trpc.botSettings.testTelegram.useMutation({
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success("Тестовое сообщение отправлено в Telegram!");
+      } else {
+        toast.error("Не удалось отправить. Проверьте токен и chat ID.");
+      }
+    },
     onError: (err) => toast.error(err.message),
   });
 
@@ -115,20 +159,41 @@ export default function BotSettings() {
     updateMutation.mutate({
       avitoAccountId: activeAccount.id,
       isEnabled,
-      systemPrompt,
-      greeting,
-      fallbackMessage,
+      systemPrompt: systemPrompt || undefined,
+      greeting: greeting || undefined,
+      fallbackMessage: fallbackMessage || undefined,
       responseDelayMs: responseDelay,
       maxTokens,
+      aggregationWindowSec: aggregationWindow,
+      workingHoursStart,
+      workingHoursEnd,
+      offHoursMessage: offHoursMessage || undefined,
+      closingMessage: closingMessage || undefined,
+      telegramEnabled,
+      telegramBotToken: telegramBotToken || undefined,
+      telegramChatId: telegramChatId || undefined,
     });
   };
 
   const handleTest = () => {
     if (!activeAccount || !testMessage.trim()) return;
     setTestResponse("");
+    setTestNeedsManager(false);
+    setTestManagerReason("");
     testMutation.mutate({
       avitoAccountId: activeAccount.id,
       testMessage: testMessage.trim(),
+    });
+  };
+
+  const handleTestTelegram = () => {
+    if (!telegramBotToken.trim() || !telegramChatId.trim()) {
+      toast.error("Заполните токен бота и Chat ID");
+      return;
+    }
+    testTelegramMutation.mutate({
+      botToken: telegramBotToken.trim(),
+      chatId: telegramChatId.trim(),
     });
   };
 
@@ -198,17 +263,17 @@ export default function BotSettings() {
             <Textarea
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="Опишите роль и поведение бота..."
+              placeholder="Оставьте пустым для использования промпта по умолчанию (продавец б/у автозапчастей)..."
               rows={8}
               className="font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground">
               Определяет характер и стиль ответов бота. Оставьте пустым для
-              использования промпта по умолчанию.
+              использования встроенного промпта для автозапчастей.
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label>Задержка ответа (мс)</Label>
               <Input
@@ -219,7 +284,7 @@ export default function BotSettings() {
                 max={30000}
               />
               <p className="text-xs text-muted-foreground">
-                Пауза перед отправкой ответа
+                Пауза перед отправкой
               </p>
             </div>
             <div className="space-y-2">
@@ -232,7 +297,20 @@ export default function BotSettings() {
                 max={4000}
               />
               <p className="text-xs text-muted-foreground">
-                Максимальная длина ответа
+                Длина ответа
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Окно агрегации (сек)</Label>
+              <Input
+                type="number"
+                value={aggregationWindow}
+                onChange={(e) => setAggregationWindow(Number(e.target.value))}
+                min={5}
+                max={120}
+              />
+              <p className="text-xs text-muted-foreground">
+                Ожидание доп. сообщений
               </p>
             </div>
           </div>
@@ -263,8 +341,160 @@ export default function BotSettings() {
             ) : (
               <Save className="mr-2 h-4 w-4" />
             )}
-            Сохранить настройки
+            Сохранить все настройки
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Working Hours */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-5 w-5" />
+            Рабочие часы
+          </CardTitle>
+          <CardDescription>
+            Настройка поведения бота в рабочее и нерабочее время (МСК)
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Начало рабочего дня</Label>
+              <Input
+                type="time"
+                value={workingHoursStart}
+                onChange={(e) => setWorkingHoursStart(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Конец рабочего дня</Label>
+              <Input
+                type="time"
+                value={workingHoursEnd}
+                onChange={(e) => setWorkingHoursEnd(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Сообщение в нерабочее время</Label>
+            <Textarea
+              value={offHoursMessage}
+              onChange={(e) => setOffHoursMessage(e.target.value)}
+              placeholder="Оставьте пустым для стандартного: 'Более подробно смогу ответить в рабочее время с 9:00 до 21:00 по Москве.'"
+              rows={2}
+            />
+            <p className="text-xs text-muted-foreground">
+              Добавляется к ответу бота в нерабочее время
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Закрывающее сообщение</Label>
+            <Textarea
+              value={closingMessage}
+              onChange={(e) => setClosingMessage(e.target.value)}
+              placeholder="Сообщение при завершении диалога..."
+              rows={2}
+            />
+          </div>
+
+          <Button onClick={handleSaveSettings} disabled={updateMutation.isPending}>
+            {updateMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            Сохранить
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Telegram Notifications */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Bell className="h-5 w-5" />
+                Уведомления в Telegram
+              </CardTitle>
+              <CardDescription>
+                Уведомление менеджера при необходимости вмешательства
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="telegram-enabled" className="text-sm">
+                {telegramEnabled ? "Включены" : "Выключены"}
+              </Label>
+              <Switch
+                id="telegram-enabled"
+                checked={telegramEnabled}
+                onCheckedChange={setTelegramEnabled}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>Токен Telegram бота</Label>
+            <Input
+              type="password"
+              value={telegramBotToken}
+              onChange={(e) => setTelegramBotToken(e.target.value)}
+              placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+            />
+            <p className="text-xs text-muted-foreground">
+              Получите у @BotFather в Telegram
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Chat ID для уведомлений</Label>
+            <Input
+              value={telegramChatId}
+              onChange={(e) => setTelegramChatId(e.target.value)}
+              placeholder="-1001234567890 или ваш личный ID"
+            />
+            <p className="text-xs text-muted-foreground">
+              ID чата или группы для получения уведомлений
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            <Button onClick={handleSaveSettings} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="mr-2 h-4 w-4" />
+              )}
+              Сохранить
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleTestTelegram}
+              disabled={testTelegramMutation.isPending || !telegramBotToken || !telegramChatId}
+            >
+              {testTelegramMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="mr-2 h-4 w-4" />
+              )}
+              Тест
+            </Button>
+          </div>
+
+          <div className="p-3 rounded-lg bg-muted/50 text-sm text-muted-foreground">
+            <p className="font-medium mb-1">Когда приходят уведомления:</p>
+            <ul className="list-disc list-inside space-y-0.5 text-xs">
+              <li>Бот не уверен в ответе</li>
+              <li>Клиент просит позвонить</li>
+              <li>Конфликт, негатив, жалоба</li>
+              <li>Проверка совместимости по VIN</li>
+              <li>Вопрос о количестве на складе</li>
+            </ul>
+          </div>
         </CardContent>
       </Card>
 
@@ -302,12 +532,24 @@ export default function BotSettings() {
             Тестировать
           </Button>
           {testResponse && (
-            <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20">
-              <div className="flex items-center gap-2 mb-2">
-                <Bot className="h-4 w-4 text-green-600" />
-                <span className="text-sm font-medium text-green-700">Ответ бота:</span>
+            <div className="space-y-2">
+              <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <Bot className="h-4 w-4 text-green-600" />
+                  <span className="text-sm font-medium text-green-700">Ответ бота:</span>
+                </div>
+                <p className="text-sm whitespace-pre-wrap">{testResponse}</p>
               </div>
-              <p className="text-sm whitespace-pre-wrap">{testResponse}</p>
+              {testNeedsManager && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-600" />
+                    <span className="text-sm font-medium text-amber-700">
+                      Требуется менеджер: {testManagerReason}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

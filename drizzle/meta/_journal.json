@@ -15,6 +15,13 @@
       "when": 1771525589415,
       "tag": "0001_hesitant_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1771577402259,
+      "tag": "0002_broad_mister_sinister",
+      "breakpoints": true
     }
   ]
 }

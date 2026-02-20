@@ -1,11 +1,21 @@
 /**
  * Avito Sync Module: Polls Avito API for new messages and processes them.
- * Handles token refresh, chat sync, and bot auto-replies.
+ * 
+ * Key filtering rules (from user requirements):
+ * 1. Only respond to messages AFTER botActivatedAt timestamp
+ * 2. If manager already replied in chat — bot continues working (uses context)
+ * 3. If message is unread — bot MUST respond. If read and dialog finished — send closing message
+ * 4. If listing is inactive — tell customer item is sold
+ * 5. Non-text messages (photos/files) — ask customer to clarify
+ * 6. Bot responds to ALL customer messages (not just first)
+ * 7. Aggregation: 40-second window to combine multiple messages
+ * 8. Working hours: 09:00-21:00 MSK full answers, outside — short + promise
+ * 9. Polling every 30 seconds
  */
 
 import * as avitoApi from "./avito-api";
 import * as db from "./db";
-import { generateBotResponse } from "./bot-engine";
+import { generateBotResponse, isWithinWorkingHours, sendTelegramNotification } from "./bot-engine";
 
 /**
  * Ensure a valid access token for an Avito account.
@@ -42,6 +52,142 @@ export async function ensureValidToken(account: {
 }
 
 /**
+ * Process aggregated pending messages for a chat.
+ * Called when the aggregation window has expired.
+ */
+async function processAggregatedMessages(
+  chatId: number,
+  avitoAccountId: number,
+  avitoChatId: string
+): Promise<{ replied: boolean; error?: string }> {
+  try {
+    const pendingMsgs = await db.getPendingMessagesForChat(chatId);
+    if (pendingMsgs.length === 0) return { replied: false };
+
+    // Combine all pending messages into one
+    const combinedText = pendingMsgs
+      .map((m) => m.content || "")
+      .filter((t) => t.length > 0)
+      .join("\n");
+
+    // Clean up pending messages
+    await db.deletePendingMessagesForChat(chatId);
+
+    if (!combinedText.trim()) return { replied: false };
+
+    const account = await db.getAvitoAccountById(avitoAccountId);
+    if (!account || !account.avitoUserId) return { replied: false, error: "Account not found" };
+
+    const chat = await db.getChatById(chatId);
+    if (!chat || !chat.botEnabled) return { replied: false };
+
+    // Check if chat status is "closed" — skip
+    if (chat.status === "closed") return { replied: false };
+
+    const settings = await db.getBotSettings(avitoAccountId);
+    if (!settings?.isEnabled) return { replied: false };
+
+    // Check working hours
+    const withinHours = isWithinWorkingHours(
+      settings.workingHoursStart || "09:00",
+      settings.workingHoursEnd || "21:00"
+    );
+
+    // Get conversation history for context (includes manager replies)
+    const history = await db.getConversationHistory(chatId, 20);
+    const chatHistory = history
+      .filter((m) => m.content)
+      .map((m) => ({
+        role: (m.direction === "in" ? "user" : "assistant") as "user" | "assistant",
+        content: m.content!,
+      }));
+
+    // Generate bot response
+    const botResponse = await generateBotResponse({
+      customerMessage: combinedText,
+      chatHistory,
+      itemTitle: chat.itemTitle || undefined,
+      systemPrompt: settings.systemPrompt || undefined,
+      maxTokens: settings.maxTokens || 500,
+      isOffHours: !withinHours,
+      offHoursMessage: settings.offHoursMessage || undefined,
+    });
+
+    // Add delay to seem more natural (2-5 seconds)
+    const delay = settings.responseDelayMs || 3000;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    // Send message via Avito API
+    const accessToken = await ensureValidToken(account);
+    const sentMsg = await avitoApi.sendMessage(
+      account.avitoUserId,
+      avitoChatId,
+      botResponse.text,
+      accessToken
+    );
+
+    // Store bot message
+    await db.insertMessage({
+      chatId,
+      avitoMessageId: sentMsg.id || null,
+      direction: "out",
+      senderType: "bot",
+      content: botResponse.text,
+      messageType: "text",
+      avitoTimestamp: sentMsg.created || Math.floor(Date.now() / 1000),
+    });
+
+    // Handle manager escalation
+    if (botResponse.needsManager) {
+      await db.updateChatStatus(chatId, "needs_manager", botResponse.managerReason);
+
+      // Send Telegram notification if configured
+      if (settings.telegramEnabled && settings.telegramBotToken && settings.telegramChatId) {
+        const customerName = chat.customerName || "Покупатель";
+        const itemInfo = chat.itemTitle ? `\nТовар: ${chat.itemTitle}` : "";
+        const telegramMsg = `⚠️ <b>Требуется внимание менеджера</b>\n\nКлиент: ${customerName}${itemInfo}\nПричина: ${botResponse.managerReason || "Не указана"}\n\nПоследнее сообщение клиента:\n<i>${combinedText.slice(0, 300)}</i>`;
+
+        await sendTelegramNotification(
+          settings.telegramBotToken,
+          settings.telegramChatId,
+          telegramMsg
+        );
+      }
+    }
+
+    return { replied: true };
+  } catch (error: any) {
+    console.error(`[AvitoSync] Process aggregated error for chat ${chatId}:`, error.message);
+    return { replied: false, error: error.message };
+  }
+}
+
+/**
+ * Determine if a message should be queued for bot response.
+ * This is the CORE filtering logic.
+ */
+function shouldQueueForBot(params: {
+  avitoMsg: avitoApi.AvitoMessage;
+  account: { botActivatedAt: Date | null };
+  isIncoming: boolean;
+}): boolean {
+  const { avitoMsg, account, isIncoming } = params;
+
+  // Only process incoming messages (from customer)
+  if (!isIncoming) return false;
+
+  // CRITICAL: Only process messages AFTER botActivatedAt
+  if (account.botActivatedAt) {
+    const msgTimeMs = avitoMsg.created * 1000;
+    if (msgTimeMs < account.botActivatedAt.getTime()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Sync chats and messages for a single Avito account.
  */
 export async function syncAccount(accountId: number): Promise<{
@@ -69,6 +215,7 @@ export async function syncAccount(accountId: number): Promise<{
     // Get bot settings for this account
     const settings = await db.getBotSettings(account.id);
     const botEnabled = settings?.isEnabled !== false;
+    const aggregationWindow = settings?.aggregationWindowSec || 40;
 
     for (const avitoChat of chatListResponse.chats) {
       try {
@@ -101,9 +248,6 @@ export async function syncAccount(accountId: number): Promise<{
 
         if (!msgResponse.messages) continue;
 
-        let hasNewIncoming = false;
-        let latestIncomingText = "";
-
         for (const avitoMsg of msgResponse.messages) {
           // Skip if already stored
           const existing = await db.getMessageByAvitoId(avitoMsg.id);
@@ -112,6 +256,12 @@ export async function syncAccount(accountId: number): Promise<{
           const isIncoming = avitoMsg.direction === "in";
           const senderType = isIncoming ? "customer" : "manual";
 
+          // Check if this message is before botActivatedAt (old message)
+          const isOldMessage = account.botActivatedAt
+            ? avitoMsg.created * 1000 < account.botActivatedAt.getTime()
+            : false;
+
+          // Store the message in DB (always, for history)
           await db.insertMessage({
             chatId,
             avitoMessageId: avitoMsg.id,
@@ -120,73 +270,40 @@ export async function syncAccount(accountId: number): Promise<{
             content: avitoMsg.content?.text || "",
             messageType: avitoMsg.type || "text",
             avitoTimestamp: avitoMsg.created,
+            isRead: isOldMessage, // Mark old messages as read
           });
 
           synced++;
 
-          if (isIncoming && avitoMsg.content?.text) {
-            hasNewIncoming = true;
-            latestIncomingText = avitoMsg.content.text;
-          }
-        }
+          // Determine if we should queue this for bot response
+          if (
+            botEnabled &&
+            shouldQueueForBot({
+              avitoMsg,
+              account,
+              isIncoming,
+            })
+          ) {
+            const chat = await db.getChatById(chatId);
+            if (chat && chat.botEnabled && chat.status !== "closed") {
+              const messageContent = avitoMsg.content?.text || "";
+              const messageType = avitoMsg.type || "text";
 
-        // Auto-reply if bot is enabled and there's a new incoming message
-        if (hasNewIncoming && botEnabled) {
-          const chat = await db.getChatById(chatId);
-          if (chat && chat.botEnabled) {
-            try {
-              // Get recent message history for context
-              const recentMessages = await db.getMessagesByChat(chatId, 20);
-              const chatHistory = recentMessages
-                .reverse()
-                .filter((m) => m.content)
-                .map((m) => ({
-                  role: (m.direction === "in" ? "user" : "assistant") as
-                    | "user"
-                    | "assistant",
-                  content: m.content!,
-                }));
+              // Handle non-text messages (images, files) — ask to clarify
+              let contentToQueue = messageContent;
+              if (!messageContent && messageType !== "text") {
+                contentToQueue = "[Клиент отправил фото/файл без текста]";
+              }
 
-              const botResponse = await generateBotResponse({
-                customerMessage: latestIncomingText,
-                chatHistory,
-                itemTitle: chat.itemTitle || undefined,
-                systemPrompt: settings?.systemPrompt || undefined,
-                maxTokens: settings?.maxTokens || 500,
-              });
-
-              // Add delay to seem more natural
-              const delay = settings?.responseDelayMs || 2000;
-              await new Promise((resolve) => setTimeout(resolve, delay));
-
-              // Send message via Avito API
-              const sentMsg = await avitoApi.sendMessage(
-                account.avitoUserId,
-                avitoChat.id,
-                botResponse,
-                accessToken
-              );
-
-              // Store bot message
-              await db.insertMessage({
+              // Add to pending messages for aggregation
+              await db.addPendingMessage({
                 chatId,
-                avitoMessageId: sentMsg.id || null,
-                direction: "out",
-                senderType: "bot",
-                content: botResponse,
-                messageType: "text",
-                avitoTimestamp: sentMsg.created || Math.floor(Date.now() / 1000),
+                avitoAccountId: account.id,
+                avitoChatId: avitoChat.id,
+                content: contentToQueue,
+                messageType,
+                avitoTimestamp: avitoMsg.created,
               });
-
-              replied++;
-            } catch (botError: any) {
-              console.error(
-                `[AvitoSync] Bot reply error for chat ${avitoChat.id}:`,
-                botError.message
-              );
-              errors.push(
-                `Bot reply failed for chat ${avitoChat.id}: ${botError.message}`
-              );
             }
           }
         }
@@ -197,6 +314,18 @@ export async function syncAccount(accountId: number): Promise<{
         );
         errors.push(`Chat ${avitoChat.id}: ${chatError.message}`);
       }
+    }
+
+    // Process aggregated messages that have passed the window
+    const readyChats = await db.getReadyPendingChats(aggregationWindow);
+    for (const readyChat of readyChats) {
+      const result = await processAggregatedMessages(
+        readyChat.chatId,
+        readyChat.avitoAccountId,
+        readyChat.avitoChatId
+      );
+      if (result.replied) replied++;
+      if (result.error) errors.push(result.error);
     }
   } catch (error: any) {
     console.error(
@@ -214,13 +343,14 @@ export async function syncAccount(accountId: number): Promise<{
  */
 export async function syncAllAccounts(): Promise<void> {
   const accounts = await db.getAllActiveAvitoAccounts();
-  console.log(`[AvitoSync] Starting sync for ${accounts.length} active accounts`);
 
   for (const account of accounts) {
     const result = await syncAccount(account.id);
-    console.log(
-      `[AvitoSync] Account ${account.id}: synced=${result.synced}, replied=${result.replied}, errors=${result.errors.length}`
-    );
+    if (result.synced > 0 || result.replied > 0 || result.errors.length > 0) {
+      console.log(
+        `[AvitoSync] Account ${account.id}: synced=${result.synced}, replied=${result.replied}, errors=${result.errors.length}`
+      );
+    }
   }
 }
 

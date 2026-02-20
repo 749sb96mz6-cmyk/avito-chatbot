@@ -1,4 +1,4 @@
-import { and, desc, eq, like, sql } from "drizzle-orm";
+import { and, desc, eq, gte, like, lte, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -18,6 +18,9 @@ import {
   promptTemplates,
   InsertPromptTemplate,
   PromptTemplate,
+  pendingMessages,
+  InsertPendingMessage,
+  PendingMessage,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -242,6 +245,59 @@ export async function updateChatBotEnabled(id: number, enabled: boolean): Promis
   await db.update(chats).set({ botEnabled: enabled }).where(eq(chats.id, id));
 }
 
+export async function updateChatStatus(
+  id: number,
+  status: "active" | "needs_manager" | "closed",
+  managerReason?: string
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .update(chats)
+    .set({ status, managerReason: managerReason ?? null })
+    .where(eq(chats.id, id));
+}
+
+/**
+ * Check if a chat has any outgoing messages from manual (human) sender
+ * after the bot was activated. If yes, it means a manager already intervened.
+ */
+export async function chatHasManagerReply(chatId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.chatId, chatId),
+        eq(messages.direction, "out"),
+        eq(messages.senderType, "manual")
+      )
+    );
+  return Number(result[0]?.count ?? 0) > 0;
+}
+
+/**
+ * Get the last outgoing message in a chat (to check if bot/manager already replied).
+ */
+export async function getLastOutgoingMessage(chatId: number): Promise<Message | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.chatId, chatId),
+        eq(messages.direction, "out")
+      )
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(1);
+  return result[0];
+}
+
 // ==================== MESSAGES ====================
 
 export async function insertMessage(data: InsertMessage): Promise<number> {
@@ -274,6 +330,74 @@ export async function getMessageByAvitoId(avitoMessageId: string): Promise<Messa
     .where(eq(messages.avitoMessageId, avitoMessageId))
     .limit(1);
   return result[0];
+}
+
+/**
+ * Get recent conversation history for LLM context (ordered oldest first).
+ */
+export async function getConversationHistory(chatId: number, limit: number = 20): Promise<Message[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const result = await db
+    .select()
+    .from(messages)
+    .where(eq(messages.chatId, chatId))
+    .orderBy(desc(messages.createdAt))
+    .limit(limit);
+  return result.reverse(); // oldest first for LLM context
+}
+
+// ==================== PENDING MESSAGES (Aggregation) ====================
+
+export async function addPendingMessage(data: InsertPendingMessage): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(pendingMessages).values(data);
+}
+
+export async function getPendingMessagesForChat(chatId: number): Promise<PendingMessage[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(pendingMessages)
+    .where(eq(pendingMessages.chatId, chatId))
+    .orderBy(pendingMessages.createdAt);
+}
+
+/**
+ * Get all chats that have pending messages older than the aggregation window.
+ */
+export async function getReadyPendingChats(windowSeconds: number): Promise<{ chatId: number; avitoAccountId: number; avitoChatId: string }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  
+  const cutoff = new Date(Date.now() - windowSeconds * 1000);
+  
+  // Get distinct chats that have pending messages where the LATEST pending message
+  // is older than the aggregation window (meaning user stopped typing)
+  const result = await db
+    .select({
+      chatId: pendingMessages.chatId,
+      avitoAccountId: pendingMessages.avitoAccountId,
+      avitoChatId: pendingMessages.avitoChatId,
+      latestAt: sql<Date>`MAX(${pendingMessages.createdAt})`,
+    })
+    .from(pendingMessages)
+    .groupBy(pendingMessages.chatId, pendingMessages.avitoAccountId, pendingMessages.avitoChatId)
+    .having(sql`MAX(${pendingMessages.createdAt}) <= ${cutoff}`);
+  
+  return result.map(r => ({
+    chatId: r.chatId,
+    avitoAccountId: r.avitoAccountId,
+    avitoChatId: r.avitoChatId,
+  }));
+}
+
+export async function deletePendingMessagesForChat(chatId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(pendingMessages).where(eq(pendingMessages.chatId, chatId));
 }
 
 // ==================== BOT SETTINGS ====================
@@ -346,7 +470,7 @@ export async function deletePromptTemplate(id: number): Promise<void> {
 
 export async function getStats(avitoAccountId: number) {
   const db = await getDb();
-  if (!db) return { totalChats: 0, totalMessages: 0, botMessages: 0, todayMessages: 0 };
+  if (!db) return { totalChats: 0, totalMessages: 0, botMessages: 0, todayMessages: 0, needsManagerCount: 0 };
 
   const chatCount = await db
     .select({ count: sql<number>`count(*)` })
@@ -381,10 +505,21 @@ export async function getStats(avitoAccountId: number) {
       )
     );
 
+  const needsManagerCnt = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(chats)
+    .where(
+      and(
+        eq(chats.avitoAccountId, avitoAccountId),
+        eq(chats.status, "needs_manager")
+      )
+    );
+
   return {
     totalChats: Number(chatCount[0]?.count ?? 0),
     totalMessages: Number(msgCount[0]?.count ?? 0),
     botMessages: Number(botMsgCount[0]?.count ?? 0),
     todayMessages: Number(todayMsgCount[0]?.count ?? 0),
+    needsManagerCount: Number(needsManagerCnt[0]?.count ?? 0),
   };
 }

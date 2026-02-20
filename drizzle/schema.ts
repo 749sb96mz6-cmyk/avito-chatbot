@@ -24,14 +24,16 @@ export type InsertUser = typeof users.$inferInsert;
  */
 export const avitoAccounts = mysqlTable("avito_accounts", {
   id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull(), // owner user id
+  userId: int("userId").notNull(),
   accountName: varchar("accountName", { length: 255 }).notNull(),
   clientId: varchar("clientId", { length: 255 }).notNull(),
   clientSecret: varchar("clientSecret", { length: 512 }).notNull(),
-  avitoUserId: varchar("avitoUserId", { length: 64 }), // Avito numeric user ID
+  avitoUserId: varchar("avitoUserId", { length: 64 }),
   accessToken: text("accessToken"),
   tokenExpiresAt: timestamp("tokenExpiresAt"),
   isActive: boolean("isActive").default(true).notNull(),
+  /** Timestamp when bot was activated — only process messages after this time */
+  botActivatedAt: timestamp("botActivatedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -53,6 +55,10 @@ export const chats = mysqlTable("chats", {
   lastMessageAt: timestamp("lastMessageAt"),
   unreadCount: int("unreadCount").default(0).notNull(),
   botEnabled: boolean("botEnabled").default(true).notNull(),
+  /** Status: active, needs_manager, closed */
+  status: mysqlEnum("status", ["active", "needs_manager", "closed"]).default("active").notNull(),
+  /** Reason why manager attention is needed */
+  managerReason: text("managerReason"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -67,11 +73,13 @@ export const messages = mysqlTable("messages", {
   id: int("id").autoincrement().primaryKey(),
   chatId: int("chatId").notNull(),
   avitoMessageId: varchar("avitoMessageId", { length: 128 }),
-  direction: mysqlEnum("direction", ["in", "out"]).notNull(), // in = from customer, out = from bot/seller
+  direction: mysqlEnum("direction", ["in", "out"]).notNull(),
   senderType: mysqlEnum("senderType", ["customer", "bot", "manual"]).notNull(),
   content: text("content"),
   messageType: varchar("messageType", { length: 32 }).default("text").notNull(),
   avitoTimestamp: bigint("avitoTimestamp", { mode: "number" }),
+  /** Whether this message has been read (for incoming messages) */
+  isRead: boolean("isRead").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -90,6 +98,22 @@ export const botSettings = mysqlTable("bot_settings", {
   fallbackMessage: text("fallbackMessage"),
   responseDelayMs: int("responseDelayMs").default(2000).notNull(),
   maxTokens: int("maxTokens").default(500).notNull(),
+  /** Message aggregation window in seconds */
+  aggregationWindowSec: int("aggregationWindowSec").default(40).notNull(),
+  /** Working hours start (HH:MM format, Moscow time) */
+  workingHoursStart: varchar("workingHoursStart", { length: 5 }).default("09:00").notNull(),
+  /** Working hours end (HH:MM format, Moscow time) */
+  workingHoursEnd: varchar("workingHoursEnd", { length: 5 }).default("21:00").notNull(),
+  /** Off-hours auto-reply message */
+  offHoursMessage: text("offHoursMessage"),
+  /** Closing message for completed dialogs */
+  closingMessage: text("closingMessage"),
+  /** Telegram bot token for manager notifications */
+  telegramBotToken: varchar("telegramBotToken", { length: 255 }),
+  /** Telegram chat ID for notifications */
+  telegramChatId: varchar("telegramChatId", { length: 64 }),
+  /** Whether Telegram notifications are enabled */
+  telegramEnabled: boolean("telegramEnabled").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -104,7 +128,7 @@ export const promptTemplates = mysqlTable("prompt_templates", {
   id: int("id").autoincrement().primaryKey(),
   avitoAccountId: int("avitoAccountId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
-  triggerKeywords: text("triggerKeywords"), // comma-separated keywords
+  triggerKeywords: text("triggerKeywords"),
   responseTemplate: text("responseTemplate").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   priority: int("priority").default(0).notNull(),
@@ -114,3 +138,21 @@ export const promptTemplates = mysqlTable("prompt_templates", {
 
 export type PromptTemplate = typeof promptTemplates.$inferSelect;
 export type InsertPromptTemplate = typeof promptTemplates.$inferInsert;
+
+/**
+ * Pending messages buffer for aggregation (40-second window).
+ */
+export const pendingMessages = mysqlTable("pending_messages", {
+  id: int("id").autoincrement().primaryKey(),
+  chatId: int("chatId").notNull(),
+  avitoAccountId: int("avitoAccountId").notNull(),
+  avitoChatId: varchar("avitoChatId", { length: 128 }).notNull(),
+  content: text("content"),
+  messageType: varchar("messageType", { length: 32 }).default("text").notNull(),
+  avitoTimestamp: bigint("avitoTimestamp", { mode: "number" }),
+  firstMessageAt: timestamp("firstMessageAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PendingMessage = typeof pendingMessages.$inferSelect;
+export type InsertPendingMessage = typeof pendingMessages.$inferInsert;

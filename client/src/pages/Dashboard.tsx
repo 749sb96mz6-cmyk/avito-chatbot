@@ -12,6 +12,7 @@ import {
   Users,
   Activity,
   ArrowRight,
+  AlertTriangle,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -23,7 +24,7 @@ export default function Dashboard() {
 
   const statsQuery = trpc.stats.get.useQuery(
     { avitoAccountId: activeAccount?.id ?? 0 },
-    { enabled: !!activeAccount }
+    { enabled: !!activeAccount, refetchInterval: 30000 }
   );
 
   const syncMutation = trpc.sync.syncAccount.useMutation({
@@ -77,23 +78,29 @@ export default function Dashboard() {
             )}
           </p>
         </div>
-        <Button
-          variant="outline"
-          onClick={() =>
-            activeAccount &&
-            syncMutation.mutate({ avitoAccountId: activeAccount.id })
-          }
-          disabled={syncMutation.isPending || !activeAccount}
-        >
-          <RefreshCw
-            className={`mr-2 h-4 w-4 ${syncMutation.isPending ? "animate-spin" : ""}`}
-          />
-          Синхронизировать
-        </Button>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs text-muted-foreground">Polling активен (30с)</span>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() =>
+              activeAccount &&
+              syncMutation.mutate({ avitoAccountId: activeAccount.id })
+            }
+            disabled={syncMutation.isPending || !activeAccount}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${syncMutation.isPending ? "animate-spin" : ""}`}
+            />
+            Синхронизировать
+          </Button>
+        </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Всего чатов</CardTitle>
@@ -151,6 +158,39 @@ export default function Dashboard() {
             ) : (
               <div className="text-2xl font-bold">
                 {stats?.todayMessages ?? 0}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card
+          className={`cursor-pointer hover:shadow-md transition-shadow ${
+            (stats?.needsManagerCount ?? 0) > 0
+              ? "border-amber-500/50 bg-amber-500/5"
+              : ""
+          }`}
+          onClick={() => setLocation("/chats?status=needs_manager")}
+        >
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Требуют менеджера</CardTitle>
+            <AlertTriangle
+              className={`h-4 w-4 ${
+                (stats?.needsManagerCount ?? 0) > 0
+                  ? "text-amber-500"
+                  : "text-muted-foreground"
+              }`}
+            />
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-20" />
+            ) : (
+              <div
+                className={`text-2xl font-bold ${
+                  (stats?.needsManagerCount ?? 0) > 0 ? "text-amber-600" : ""
+                }`}
+              >
+                {stats?.needsManagerCount ?? 0}
               </div>
             )}
           </CardContent>

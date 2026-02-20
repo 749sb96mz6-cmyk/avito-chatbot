@@ -36,11 +36,11 @@ import {
   Plus,
   Trash2,
   Loader2,
-  CheckCircle2,
-  XCircle,
   Settings2,
   Wifi,
   Key,
+  RotateCcw,
+  Calendar,
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -56,7 +56,7 @@ export default function Settings() {
 
   const createMutation = trpc.avitoAccounts.create.useMutation({
     onSuccess: () => {
-      toast.success("Аккаунт подключён");
+      toast.success("Аккаунт подключён. Бот начнёт обрабатывать только новые сообщения с этого момента.");
       accountsQuery.refetch();
       resetForm();
       setShowAddDialog(false);
@@ -86,6 +86,14 @@ export default function Settings() {
   const updateMutation = trpc.avitoAccounts.update.useMutation({
     onSuccess: () => {
       toast.success("Аккаунт обновлён");
+      accountsQuery.refetch();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const resetActivationMutation = trpc.avitoAccounts.resetActivation.useMutation({
+    onSuccess: () => {
+      toast.success("Дата активации сброшена. Бот будет обрабатывать только новые сообщения с текущего момента.");
       accountsQuery.refetch();
     },
     onError: (err) => toast.error(err.message),
@@ -236,8 +244,21 @@ export default function Settings() {
                   {account.avitoUserId && ` | User ID: ${account.avitoUserId}`}
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2">
+              <CardContent className="space-y-3">
+                {/* Bot activation date */}
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-muted/50 text-sm">
+                  <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground">
+                    Бот обрабатывает сообщения с:{" "}
+                    <span className="text-foreground font-medium">
+                      {account.botActivatedAt
+                        ? new Date(account.botActivatedAt).toLocaleString("ru-RU")
+                        : "не установлено"}
+                    </span>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
                   <Button
                     variant="outline"
                     size="sm"
@@ -251,6 +272,35 @@ export default function Settings() {
                     )}
                     Проверить подключение
                   </Button>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        <RotateCcw className="mr-2 h-3.5 w-3.5" />
+                        Сбросить дату активации
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Сбросить дату активации?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Дата активации будет установлена на текущий момент. Бот
+                          перестанет обрабатывать все старые сообщения и начнёт
+                          работать только с новыми.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Отмена</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() =>
+                            resetActivationMutation.mutate({ id: account.id })
+                          }
+                        >
+                          Сбросить
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
 
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
@@ -282,7 +332,7 @@ export default function Settings() {
                 </div>
 
                 {account.tokenExpiresAt && (
-                  <p className="text-xs text-muted-foreground mt-3">
+                  <p className="text-xs text-muted-foreground">
                     Токен действителен до:{" "}
                     {new Date(account.tokenExpiresAt).toLocaleString("ru-RU")}
                   </p>
@@ -316,6 +366,14 @@ export default function Settings() {
             4. Avito User ID можно найти в URL вашего профиля (числовой
             идентификатор)
           </p>
+          <div className="mt-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+            <p className="text-xs text-blue-700 dark:text-blue-400">
+              <strong>Важно:</strong> При подключении аккаунта бот автоматически
+              запоминает текущую дату и время. Все сообщения, полученные до этого
+              момента, будут проигнорированы. Бот начнёт отвечать только на новые
+              сообщения.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -1,5 +1,4 @@
 import { trpc } from "@/lib/trpc";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -15,21 +14,31 @@ import {
   Send,
   ArrowLeft,
   ExternalLink,
+  AlertTriangle,
+  CheckCircle,
 } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { toast } from "sonner";
+import { useSearch } from "wouter";
+
+type StatusFilter = "all" | "active" | "needs_manager" | "closed";
 
 export default function Chats() {
+  const searchParams = useSearch();
+  const urlParams = useMemo(() => new URLSearchParams(searchParams), [searchParams]);
+  const initialStatus = (urlParams.get("status") as StatusFilter) || "all";
+
   const [selectedChatId, setSelectedChatId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [manualMessage, setManualMessage] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
 
   const accountsQuery = trpc.avitoAccounts.list.useQuery();
   const activeAccount = accountsQuery.data?.[0];
 
   const chatsQuery = trpc.chats.list.useQuery(
     { avitoAccountId: activeAccount?.id ?? 0, search: searchQuery || undefined },
-    { enabled: !!activeAccount }
+    { enabled: !!activeAccount, refetchInterval: 15000 }
   );
 
   const messagesQuery = trpc.messages.list.useQuery(
@@ -39,11 +48,37 @@ export default function Chats() {
 
   const selectedChat = chatsQuery.data?.find((c) => c.id === selectedChatId);
 
+  // Filter chats by status
+  const filteredChats = useMemo(() => {
+    if (!chatsQuery.data) return [];
+    if (statusFilter === "all") return chatsQuery.data;
+    return chatsQuery.data.filter((c) => c.status === statusFilter);
+  }, [chatsQuery.data, statusFilter]);
+
+  // Count by status
+  const statusCounts = useMemo(() => {
+    if (!chatsQuery.data) return { all: 0, active: 0, needs_manager: 0, closed: 0 };
+    return {
+      all: chatsQuery.data.length,
+      active: chatsQuery.data.filter((c) => c.status === "active").length,
+      needs_manager: chatsQuery.data.filter((c) => c.status === "needs_manager").length,
+      closed: chatsQuery.data.filter((c) => c.status === "closed").length,
+    };
+  }, [chatsQuery.data]);
+
   const toggleBotMutation = trpc.chats.toggleBot.useMutation({
     onSuccess: () => {
       chatsQuery.refetch();
       toast.success("Настройка бота обновлена");
     },
+  });
+
+  const updateStatusMutation = trpc.chats.updateStatus.useMutation({
+    onSuccess: () => {
+      chatsQuery.refetch();
+      toast.success("Статус чата обновлён");
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const sendMutation = trpc.messages.sendManual.useMutation({
@@ -76,6 +111,13 @@ export default function Chats() {
     );
   }
 
+  const statusFilters: { key: StatusFilter; label: string; color?: string }[] = [
+    { key: "all", label: "Все" },
+    { key: "active", label: "Активные" },
+    { key: "needs_manager", label: "Менеджеру", color: "text-amber-600" },
+    { key: "closed", label: "Закрытые" },
+  ];
+
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
       {/* Chat List */}
@@ -84,7 +126,7 @@ export default function Chats() {
           selectedChatId ? "hidden md:flex" : "flex"
         }`}
       >
-        <div className="p-3 border-b">
+        <div className="p-3 border-b space-y-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -93,6 +135,25 @@ export default function Chats() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9"
             />
+          </div>
+          {/* Status filter tabs */}
+          <div className="flex gap-1">
+            {statusFilters.map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setStatusFilter(f.key)}
+                className={`flex-1 text-[11px] py-1.5 px-1 rounded-md transition-colors ${
+                  statusFilter === f.key
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                } ${f.color && statusFilter !== f.key ? f.color : ""}`}
+              >
+                {f.label}
+                {statusCounts[f.key] > 0 && (
+                  <span className="ml-0.5">({statusCounts[f.key]})</span>
+                )}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -103,30 +164,42 @@ export default function Chats() {
                 <Skeleton key={i} className="h-16 w-full" />
               ))}
             </div>
-          ) : chatsQuery.data?.length === 0 ? (
+          ) : filteredChats.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <MessageSquare className="h-8 w-8 mb-2 opacity-50" />
               <p className="text-sm">Нет чатов</p>
-              <p className="text-xs mt-1">Синхронизируйте данные с Avito</p>
+              <p className="text-xs mt-1">
+                {statusFilter !== "all"
+                  ? "Попробуйте другой фильтр"
+                  : "Синхронизируйте данные с Avito"}
+              </p>
             </div>
           ) : (
             <div className="p-2 space-y-1">
-              {chatsQuery.data?.map((chat) => (
+              {filteredChats.map((chat) => (
                 <button
                   key={chat.id}
                   onClick={() => setSelectedChatId(chat.id)}
                   className={`w-full text-left p-3 rounded-lg transition-colors ${
                     selectedChatId === chat.id
                       ? "bg-primary/10 border border-primary/20"
-                      : "hover:bg-accent"
+                      : chat.status === "needs_manager"
+                        ? "bg-amber-500/5 hover:bg-amber-500/10 border border-amber-500/20"
+                        : "hover:bg-accent"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
                         <span className="font-medium text-sm truncate">
                           {chat.customerName || "Покупатель"}
                         </span>
+                        {chat.status === "needs_manager" && (
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                        )}
+                        {chat.status === "closed" && (
+                          <CheckCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        )}
                         {chat.botEnabled && (
                           <Badge
                             variant="secondary"
@@ -140,6 +213,11 @@ export default function Chats() {
                       {chat.itemTitle && (
                         <p className="text-xs text-muted-foreground truncate mt-0.5">
                           {chat.itemTitle}
+                        </p>
+                      )}
+                      {chat.status === "needs_manager" && chat.managerReason && (
+                        <p className="text-[10px] text-amber-600 truncate mt-0.5">
+                          {chat.managerReason}
                         </p>
                       )}
                     </div>
@@ -183,6 +261,12 @@ export default function Chats() {
                     <h3 className="font-semibold text-sm">
                       {selectedChat.customerName || "Покупатель"}
                     </h3>
+                    {selectedChat.status === "needs_manager" && (
+                      <Badge variant="outline" className="text-amber-600 border-amber-500/30 text-[10px]">
+                        <AlertTriangle className="h-3 w-3 mr-1" />
+                        Требуется менеджер
+                      </Badge>
+                    )}
                     {selectedChat.itemUrl && (
                       <a
                         href={selectedChat.itemUrl}
@@ -199,19 +283,42 @@ export default function Chats() {
                       {selectedChat.itemTitle}
                     </p>
                   )}
+                  {selectedChat.managerReason && selectedChat.status === "needs_manager" && (
+                    <p className="text-xs text-amber-600 mt-0.5">
+                      Причина: {selectedChat.managerReason}
+                    </p>
+                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Бот</span>
-                <Switch
-                  checked={selectedChat.botEnabled}
-                  onCheckedChange={(checked) =>
-                    toggleBotMutation.mutate({
-                      id: selectedChat.id,
-                      enabled: checked,
-                    })
-                  }
-                />
+              <div className="flex items-center gap-3">
+                {selectedChat.status === "needs_manager" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() =>
+                      updateStatusMutation.mutate({
+                        id: selectedChat.id,
+                        status: "active",
+                      })
+                    }
+                  >
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Обработано
+                  </Button>
+                )}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Бот</span>
+                  <Switch
+                    checked={selectedChat.botEnabled}
+                    onCheckedChange={(checked) =>
+                      toggleBotMutation.mutate({
+                        id: selectedChat.id,
+                        enabled: checked,
+                      })
+                    }
+                  />
+                </div>
               </div>
             </div>
 

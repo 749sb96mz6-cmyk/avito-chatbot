@@ -6,7 +6,7 @@ import { z } from "zod";
 import * as db from "./db";
 import * as avitoApi from "./avito-api";
 import { syncAccount, ensureValidToken, startPolling, stopPolling } from "./avito-sync";
-import { generateBotResponse } from "./bot-engine";
+import { generateBotResponse, sendTelegramNotification } from "./bot-engine";
 
 export const appRouter = router({
   system: systemRouter,
@@ -35,7 +35,6 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        // Validate credentials by trying to get a token
         try {
           const tokenResponse = await avitoApi.getAccessToken(
             input.clientId,
@@ -54,7 +53,24 @@ export const appRouter = router({
             avitoUserId: input.avitoUserId || null,
             accessToken: tokenResponse.access_token,
             tokenExpiresAt: expiresAt,
+            botActivatedAt: new Date(), // Mark activation time
           });
+
+          // Create default bot settings for this account
+          const accounts = await db.getAvitoAccountsByUser(ctx.user.id);
+          const newAccount = accounts.find(a => a.clientId === input.clientId);
+          if (newAccount) {
+            await db.upsertBotSettings({
+              avitoAccountId: newAccount.id,
+              isEnabled: true,
+              aggregationWindowSec: 40,
+              responseDelayMs: 3000,
+              maxTokens: 500,
+              workingHoursStart: "09:00",
+              workingHoursEnd: "21:00",
+              telegramEnabled: false,
+            });
+          }
 
           return { success: true };
         } catch (error: any) {
@@ -104,6 +120,14 @@ export const appRouter = router({
           return { success: false, message: error.message };
         }
       }),
+
+    // Reset botActivatedAt to current time (ignore all old messages)
+    resetActivation: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.updateAvitoAccount(input.id, { botActivatedAt: new Date() });
+        return { success: true };
+      }),
   }),
 
   // ==================== CHATS ====================
@@ -113,6 +137,7 @@ export const appRouter = router({
         z.object({
           avitoAccountId: z.number(),
           search: z.string().optional(),
+          statusFilter: z.enum(["all", "active", "needs_manager", "closed"]).optional(),
         })
       )
       .query(async ({ input }) => {
@@ -129,6 +154,18 @@ export const appRouter = router({
       .input(z.object({ id: z.number(), enabled: z.boolean() }))
       .mutation(async ({ input }) => {
         await db.updateChatBotEnabled(input.id, input.enabled);
+        return { success: true };
+      }),
+
+    updateStatus: protectedProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          status: z.enum(["active", "needs_manager", "closed"]),
+        })
+      )
+      .mutation(async ({ input }) => {
+        await db.updateChatStatus(input.id, input.status);
         return { success: true };
       }),
   }),
@@ -183,6 +220,11 @@ export const appRouter = router({
           avitoTimestamp: sentMsg.created || Math.floor(Date.now() / 1000),
         });
 
+        // If chat was needs_manager, set it back to active after manager replies
+        if (chat.status === "needs_manager") {
+          await db.updateChatStatus(input.chatId, "active");
+        }
+
         return { success: true };
       }),
   }),
@@ -205,6 +247,15 @@ export const appRouter = router({
           fallbackMessage: z.string().optional(),
           responseDelayMs: z.number().optional(),
           maxTokens: z.number().optional(),
+          aggregationWindowSec: z.number().optional(),
+          workingHoursEnabled: z.boolean().optional(),
+          workingHoursStart: z.string().optional(),
+          workingHoursEnd: z.string().optional(),
+          offHoursMessage: z.string().optional(),
+          closingMessage: z.string().optional(),
+          telegramEnabled: z.boolean().optional(),
+          telegramBotToken: z.string().optional(),
+          telegramChatId: z.string().optional(),
         })
       )
       .mutation(async ({ input }) => {
@@ -226,7 +277,23 @@ export const appRouter = router({
           systemPrompt: settings?.systemPrompt || undefined,
           maxTokens: settings?.maxTokens || 500,
         });
-        return { response };
+        return { response: response.text, needsManager: response.needsManager, managerReason: response.managerReason };
+      }),
+
+    testTelegram: protectedProcedure
+      .input(
+        z.object({
+          botToken: z.string().min(1),
+          chatId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const success = await sendTelegramNotification(
+          input.botToken,
+          input.chatId,
+          "✅ Тестовое уведомление от Avito Chatbot. Telegram подключён успешно!"
+        );
+        return { success };
       }),
   }),
 
