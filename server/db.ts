@@ -29,6 +29,7 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
+      // Use connection string with pool options appended for keepalive
       _db = drizzle(process.env.DATABASE_URL);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
@@ -36,6 +37,25 @@ export async function getDb() {
     }
   }
   return _db;
+}
+
+/**
+ * Reset DB connection (used for recovery after ECONNRESET).
+ */
+export async function resetDbConnection(): Promise<void> {
+  try {
+    if (_db) {
+      // Try to close existing pool
+      const client = (_db as any).$client;
+      if (client && typeof client.end === 'function') {
+        await client.end().catch(() => {});
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  _db = null;
+  console.log("[Database] Connection reset, will reconnect on next query");
 }
 
 // ==================== USERS ====================

@@ -352,16 +352,40 @@ export async function syncAccount(accountId: number): Promise<{
 
 /**
  * Sync all active Avito accounts.
+ * Includes automatic DB reconnection on connection errors.
  */
 export async function syncAllAccounts(): Promise<void> {
-  const accounts = await db.getAllActiveAvitoAccounts();
+  let accounts;
+  try {
+    accounts = await db.getAllActiveAvitoAccounts();
+  } catch (error: any) {
+    // If DB connection is broken (ECONNRESET, PROTOCOL_CONNECTION_LOST, etc.), reset and retry
+    if (error.message?.includes('ECONNRESET') || error.message?.includes('PROTOCOL') || error.message?.includes('ETIMEDOUT') || error.code === 'ECONNRESET') {
+      console.warn('[AvitoSync] DB connection error, resetting connection pool...');
+      await db.resetDbConnection();
+      // Retry once after reset
+      accounts = await db.getAllActiveAvitoAccounts();
+    } else {
+      throw error;
+    }
+  }
 
   for (const account of accounts) {
-    const result = await syncAccount(account.id);
-    if (result.synced > 0 || result.replied > 0 || result.errors.length > 0) {
-      console.log(
-        `[AvitoSync] Account ${account.id}: synced=${result.synced}, replied=${result.replied}, errors=${result.errors.length}`
-      );
+    try {
+      const result = await syncAccount(account.id);
+      if (result.synced > 0 || result.replied > 0 || result.errors.length > 0) {
+        console.log(
+          `[AvitoSync] Account ${account.id}: synced=${result.synced}, replied=${result.replied}, errors=${result.errors.length}`
+        );
+      }
+    } catch (error: any) {
+      // If individual account sync fails due to DB, reset and continue
+      if (error.message?.includes('ECONNRESET') || error.code === 'ECONNRESET') {
+        console.warn(`[AvitoSync] DB connection lost during account ${account.id} sync, resetting...`);
+        await db.resetDbConnection();
+      } else {
+        console.error(`[AvitoSync] Account ${account.id} sync failed:`, error.message);
+      }
     }
   }
 }
