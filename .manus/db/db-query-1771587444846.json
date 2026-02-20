@@ -1,0 +1,80 @@
+{
+  "query": "SELECT m.id, m.chatId, m.direction, m.senderType, m.content, m.messageType, m.avitoTimestamp, c.customerName \nFROM messages m \nJOIN chats c ON m.chatId = c.id \nWHERE c.customerName LIKE '%ирина%' OR c.customerName LIKE '%Ирина%'\nORDER BY m.avitoTimestamp DESC \nLIMIT 15",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3J1p6DWuZuycUju.root --database 5cBEhbc7R8PnfAoRyL6YGT --execute SELECT m.id, m.chatId, m.direction, m.senderType, m.content, m.messageType, m.avitoTimestamp, c.customerName \nFROM messages m \nJOIN chats c ON m.chatId = c.id \nWHERE c.customerName LIKE '%ирина%' OR c.customerName LIKE '%Ирина%'\nORDER BY m.avitoTimestamp DESC \nLIMIT 15",
+  "rows": [
+    {
+      "id": "30071",
+      "chatId": "30001",
+      "direction": "out",
+      "senderType": "bot",
+      "content": "Понял вас. Если вы оформили заказ через Авито Доставку, то все детали заказа будут видны в вашем личном кабинете. Мы отправим ту запчасть, которая указана в заказе.",
+      "messageType": "text",
+      "avitoTimestamp": "1771587380",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30070",
+      "chatId": "30001",
+      "direction": "in",
+      "senderType": "customer",
+      "content": "Я там вроде оформил Авито доставку на правую вроде по фото выглядет неплохо",
+      "messageType": "text",
+      "avitoTimestamp": "1771587322",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30069",
+      "chatId": "30001",
+      "direction": "out",
+      "senderType": "bot",
+      "content": "Здравствуйте! Сейчас посмотрим, что есть по этой машине, и вернёмся с ответом!",
+      "messageType": "text",
+      "avitoTimestamp": "1771587172",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30067",
+      "chatId": "30001",
+      "direction": "in",
+      "senderType": "customer",
+      "content": "Спасибо",
+      "messageType": "text",
+      "avitoTimestamp": "1771587055",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30068",
+      "chatId": "30001",
+      "direction": "in",
+      "senderType": "customer",
+      "content": "Спасибо",
+      "messageType": "text",
+      "avitoTimestamp": "1771587055",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30066",
+      "chatId": "30001",
+      "direction": "out",
+      "senderType": "manual",
+      "content": "",
+      "messageType": "link",
+      "avitoTimestamp": "1771586898",
+      "customerName": "ирина"
+    },
+    {
+      "id": "30001",
+      "chatId": "30001",
+      "direction": "in",
+      "senderType": "customer",
+      "content": "Добрый день, случайно правой заглушки нет ?",
+      "messageType": "text",
+      "avitoTimestamp": "1771576467",
+      "customerName": "ирина"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tchatId\tdirection\tsenderType\tcontent\tmessageType\tavitoTimestamp\tcustomerName\n30071\t30001\tout\tbot\tПонял вас. Если вы оформили заказ через Авито Доставку, то все детали заказа будут видны в вашем личном кабинете. Мы отправим ту запчасть, которая указана в заказе.\ttext\t1771587380\tирина\n30070\t30001\tin\tcustomer\tЯ там вроде оформил Авито доставку на правую вроде по фото выглядет неплохо\ttext\t1771587322\tирина\n30069\t30001\tout\tbot\tЗдравствуйте! Сейчас посмотрим, что есть по этой машине, и вернёмся с ответом!\ttext\t1771587172\tирина\n30067\t30001\tin\tcustomer\tСпасибо\ttext\t1771587055\tирина\n30068\t30001\tin\tcustomer\tСпасибо\ttext\t1771587055\tирина\n30066\t30001\tout\tmanual\t\tlink\t1771586898\tирина\n30001\t30001\tin\tcustomer\tДобрый день, случайно правой заглушки нет ?\ttext\t1771576467\tирина\n",
+  "stderr": "",
+  "execution_time_ms": 366
+}

@@ -375,6 +375,38 @@ describe("generateBotResponse", () => {
     expect(systemMsg?.content).toContain("посмотрим, что есть");
     expect(systemMsg?.content).toContain("NEEDS_MANAGER: Клиент интересуется другими запчастями");
   });
+
+  // Gratitude and manager context tests
+
+  it("includes gratitude handling rules in system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Спасибо",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("БЛАГОДАРНОСТИ И ПРОЩАНИЯ");
+    expect(systemMsg?.content).toContain("Пожалуйста");
+    expect(systemMsg?.content).toContain("Не начинай новую тему");
+  });
+
+  it("includes manager context rules in system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Спасибо",
+      chatHistory: [
+        { role: "user", content: "Есть правая заглушка?" },
+        { role: "assistant", content: "[Отправлена ссылка на товар]" },
+      ],
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("КОНТЕКСТ СООБЩЕНИЙ МЕНЕДЖЕРА");
+    expect(systemMsg?.content).toContain("Отправлена ссылка на товар");
+    // Verify the link message is in history
+    const historyMsgs = callArgs.messages.filter((m: any) => m.role === "assistant");
+    expect(historyMsgs.some((m: any) => m.content.includes("ссылка на товар"))).toBe(true);
+  });
 });
 
 describe("sendTelegramNotification", () => {

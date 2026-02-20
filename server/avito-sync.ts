@@ -261,14 +261,29 @@ export async function syncAccount(accountId: number): Promise<{
             ? avitoMsg.created * 1000 < account.botActivatedAt.getTime()
             : false;
 
+          // Build content — for non-text message types, add descriptive text for LLM context
+          let messageContent = avitoMsg.content?.text || "";
+          const msgType = avitoMsg.type || "text";
+          if (!messageContent) {
+            if (msgType === "link" && !isIncoming) {
+              messageContent = "[Отправлена ссылка на товар]";
+            } else if (msgType === "link" && isIncoming) {
+              messageContent = "[Клиент отправил ссылку]";
+            } else if (msgType === "image" || msgType === "file") {
+              messageContent = isIncoming ? "[Клиент отправил фото/файл]" : "[Отправлено фото/файл]";
+            } else if (msgType === "call") {
+              messageContent = isIncoming ? "[Входящий звонок]" : "[Исходящий звонок]";
+            }
+          }
+
           // Store the message in DB (always, for history)
           await db.insertMessage({
             chatId,
             avitoMessageId: avitoMsg.id,
             direction: avitoMsg.direction,
             senderType,
-            content: avitoMsg.content?.text || "",
-            messageType: avitoMsg.type || "text",
+            content: messageContent,
+            messageType: msgType,
             avitoTimestamp: avitoMsg.created,
             isRead: isOldMessage, // Mark old messages as read
           });
@@ -286,12 +301,9 @@ export async function syncAccount(accountId: number): Promise<{
           ) {
             const chat = await db.getChatById(chatId);
             if (chat && chat.botEnabled && chat.status !== "closed") {
-              const messageContent = avitoMsg.content?.text || "";
-              const messageType = avitoMsg.type || "text";
-
-              // Handle non-text messages (images, files) — ask to clarify
+              // Use the already-enriched messageContent from above
               let contentToQueue = messageContent;
-              if (!messageContent && messageType !== "text") {
+              if (!contentToQueue && msgType !== "text") {
                 contentToQueue = "[Клиент отправил фото/файл без текста]";
               }
 
@@ -301,7 +313,7 @@ export async function syncAccount(accountId: number): Promise<{
                 avitoAccountId: account.id,
                 avitoChatId: avitoChat.id,
                 content: contentToQueue,
-                messageType,
+                messageType: msgType,
                 avitoTimestamp: avitoMsg.created,
               });
             }
