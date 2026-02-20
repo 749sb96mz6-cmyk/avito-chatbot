@@ -188,6 +188,123 @@ describe("generateBotResponse", () => {
     const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
     expect(systemMsg?.content).toContain("Фара левая Toyota Camry 2018");
   });
+
+  // NEW TESTS: Conversation context and greeting deduplication
+
+  it("includes greeting rules in default system prompt", async () => {
+    await generateBotResponse({
+      customerMessage: "Привет",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("Здоровайся ТОЛЬКО в первом сообщении диалога");
+    expect(systemMsg?.content).toContain("НЕ здоровайся снова");
+  });
+
+  it("appends greeting rules to custom system prompt that lacks them", async () => {
+    await generateBotResponse({
+      customerMessage: "Привет",
+      systemPrompt: "Ты менеджер магазина. Отвечай вежливо.",
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    expect(systemMsg?.content).toContain("Ты менеджер магазина. Отвечай вежливо.");
+    expect(systemMsg?.content).toContain("Здоровайся ТОЛЬКО в первом сообщении диалога");
+  });
+
+  it("does NOT duplicate greeting rules if custom prompt already has them", async () => {
+    const customPrompt = "Ты менеджер. Здоровайся ТОЛЬКО в первом сообщении.";
+    await generateBotResponse({
+      customerMessage: "Привет",
+      systemPrompt: customPrompt,
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    const systemMsg = callArgs.messages.find((m: any) => m.role === "system");
+    // Should contain the original but NOT the appended duplicate
+    const occurrences = (systemMsg?.content.match(/Здоровайся ТОЛЬКО/g) || []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("does NOT duplicate current message if it is already the last in chatHistory", async () => {
+    const customerMsg = "Сколько стоит доставка?";
+    await generateBotResponse({
+      customerMessage: customerMsg,
+      chatHistory: [
+        { role: "user", content: "Привет" },
+        { role: "assistant", content: "Здравствуйте! Чем могу помочь?" },
+        { role: "user", content: customerMsg }, // same as customerMessage
+      ],
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    // system + 3 history = 4 messages (NOT 5 with duplicate)
+    expect(callArgs.messages.length).toBe(4);
+    // Verify the last message is the customer message (from history)
+    const lastMsg = callArgs.messages[callArgs.messages.length - 1];
+    expect(lastMsg.role).toBe("user");
+    expect(lastMsg.content).toBe(customerMsg);
+  });
+
+  it("adds current message when it is NOT in chatHistory", async () => {
+    await generateBotResponse({
+      customerMessage: "А гарантия есть?",
+      chatHistory: [
+        { role: "user", content: "Привет" },
+        { role: "assistant", content: "Здравствуйте!" },
+      ],
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    // system + 2 history + 1 current = 4 messages
+    expect(callArgs.messages.length).toBe(4);
+    const lastMsg = callArgs.messages[callArgs.messages.length - 1];
+    expect(lastMsg.role).toBe("user");
+    expect(lastMsg.content).toBe("А гарантия есть?");
+  });
+
+  it("limits chat history to last 15 messages", async () => {
+    const longHistory = Array.from({ length: 25 }, (_, i) => ({
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `Message ${i}`,
+    }));
+
+    await generateBotResponse({
+      customerMessage: "Новый вопрос",
+      chatHistory: longHistory,
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    // system + 15 (sliced history) + 1 current = 17 messages
+    expect(callArgs.messages.length).toBe(17);
+    // First history message should be from the end of the array (last 15)
+    expect(callArgs.messages[1].content).toBe("Message 10");
+  });
+
+  it("passes full conversation context with alternating user/assistant messages", async () => {
+    await generateBotResponse({
+      customerMessage: "А можно по VIN проверить?",
+      chatHistory: [
+        { role: "user", content: "Здравствуйте, фара есть?" },
+        { role: "assistant", content: "Здравствуйте! Да, товар в наличии." },
+        { role: "user", content: "А какое состояние?" },
+        { role: "assistant", content: "Состояние б/у, после ДТП. На фото видно." },
+      ],
+    });
+
+    const callArgs = mockInvokeLLM.mock.calls[0][0];
+    // system + 4 history + 1 current = 6 messages
+    expect(callArgs.messages.length).toBe(6);
+    // Verify the order is correct
+    expect(callArgs.messages[1].role).toBe("user");
+    expect(callArgs.messages[2].role).toBe("assistant");
+    expect(callArgs.messages[3].role).toBe("user");
+    expect(callArgs.messages[4].role).toBe("assistant");
+    expect(callArgs.messages[5].role).toBe("user");
+    expect(callArgs.messages[5].content).toBe("А можно по VIN проверить?");
+  });
 });
 
 describe("sendTelegramNotification", () => {

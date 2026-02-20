@@ -10,6 +10,11 @@ const DEFAULT_SYSTEM_PROMPT = `Ты — менеджер-консультант 
 ВАЖНО: Ты НЕ бот. Ты пишешь КАК ЖИВОЙ МЕНЕДЖЕР. Никогда не раскрывай что ты бот/AI.
 Пиши простым текстом без markdown (без **, ##, - списков). Это мессенджер Авито.
 
+ПРАВИЛА ДИАЛОГА:
+- Здоровайся ТОЛЬКО в первом сообщении диалога. Если ты уже здоровался ранее в этом чате — НЕ здоровайся снова.
+- Если в истории чата уже есть твои ответы — значит диалог продолжается, веди его естественно без повторных приветствий.
+- Если клиент задаёт новый вопрос в том же чате — просто отвечай на вопрос, без "Здравствуйте" и прочих приветствий.
+
 ПРАВИЛА ОТВЕТОВ:
 
 1. НАЛИЧИЕ ТОВАРА:
@@ -121,6 +126,14 @@ export async function generateBotResponse(ctx: BotContext): Promise<BotResponse>
   // Build full system prompt with context
   let fullSystemPrompt = basePrompt;
 
+  // If user's custom prompt doesn't include greeting rules, add them
+  if (ctx.systemPrompt && !ctx.systemPrompt.includes("Здоровайся ТОЛЬКО")) {
+    fullSystemPrompt += `\n\nПРАВИЛА ДИАЛОГА:
+- Здоровайся ТОЛЬКО в первом сообщении диалога. Если ты уже здоровался ранее в этом чате — НЕ здоровайся снова.
+- Если в истории чата уже есть твои ответы — значит диалог продолжается, веди его естественно без повторных приветствий.
+- Если клиент задаёт новый вопрос в том же чате — просто отвечай на вопрос.`;
+  }
+
   if (ctx.isOffHours) {
     fullSystemPrompt += ctx.offHoursMessage
       ? `\n\nСЕЙЧАС НЕРАБОЧЕЕ ВРЕМЯ. ${ctx.offHoursMessage}`
@@ -151,12 +164,13 @@ export async function generateBotResponse(ctx: BotContext): Promise<BotResponse>
 
 Если эскалация не нужна — НЕ добавляй этот тег.`;
 
-  // Build message history
+  // Build message history for LLM
   const llmMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     { role: "system", content: fullSystemPrompt },
   ];
 
   // Add recent chat history (last 15 messages for context)
+  // This includes BOTH previous customer messages AND previous bot/manager replies
   if (ctx.chatHistory && ctx.chatHistory.length > 0) {
     const recentHistory = ctx.chatHistory.slice(-15);
     for (const msg of recentHistory) {
@@ -164,8 +178,19 @@ export async function generateBotResponse(ctx: BotContext): Promise<BotResponse>
     }
   }
 
-  // Add the current customer message
-  llmMessages.push({ role: "user", content: ctx.customerMessage });
+  // Add the current customer message (aggregated) ONLY if it's not already the last message in history
+  // This prevents duplication when the current message is already in chatHistory
+  const lastHistoryMsg = ctx.chatHistory && ctx.chatHistory.length > 0
+    ? ctx.chatHistory[ctx.chatHistory.length - 1]
+    : null;
+  
+  const isCurrentMsgAlreadyInHistory = lastHistoryMsg 
+    && lastHistoryMsg.role === "user" 
+    && lastHistoryMsg.content === ctx.customerMessage;
+
+  if (!isCurrentMsgAlreadyInHistory) {
+    llmMessages.push({ role: "user", content: ctx.customerMessage });
+  }
 
   try {
     const result = await invokeLLM({
@@ -225,12 +250,13 @@ export async function sendTelegramNotification(
   message: string
 ): Promise<boolean> {
   try {
+    const trimmedChatId = chatId.trim();
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id: chatId,
+        chat_id: trimmedChatId,
         text: message,
         parse_mode: "HTML",
       }),

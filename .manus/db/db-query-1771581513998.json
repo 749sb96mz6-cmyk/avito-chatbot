@@ -1,0 +1,18 @@
+{
+  "query": "SELECT id, accountName, avitoUserId, botActivatedAt, isActive, tokenExpiresAt FROM avito_accounts;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3J1p6DWuZuycUju.root --database 5cBEhbc7R8PnfAoRyL6YGT --execute SELECT id, accountName, avitoUserId, botActivatedAt, isActive, tokenExpiresAt FROM avito_accounts;",
+  "rows": [
+    {
+      "id": "1",
+      "accountName": "Авито 501-1500",
+      "avitoUserId": "418809425",
+      "botActivatedAt": "2026-02-20 09:52:56",
+      "isActive": "1",
+      "tokenExpiresAt": "2026-02-20 19:51:59"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\taccountName\tavitoUserId\tbotActivatedAt\tisActive\ttokenExpiresAt\n1\tАвито 501-1500\t418809425\t2026-02-20 09:52:56\t1\t2026-02-20 19:51:59\n",
+  "stderr": "",
+  "execution_time_ms": 349
+}

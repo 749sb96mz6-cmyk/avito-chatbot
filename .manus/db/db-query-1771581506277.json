@@ -1,0 +1,13 @@
+{
+  "query": "SELECT COUNT(*) as cnt FROM pending_messages; SELECT * FROM pending_messages ORDER BY createdAt DESC LIMIT 5;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 3J1p6DWuZuycUju.root --database 5cBEhbc7R8PnfAoRyL6YGT --execute SELECT COUNT(*) as cnt FROM pending_messages; SELECT * FROM pending_messages ORDER BY createdAt DESC LIMIT 5;",
+  "rows": [
+    {
+      "cnt": "0"
+    }
+  ],
+  "messages": [],
+  "stdout": "cnt\n0\n",
+  "stderr": "",
+  "execution_time_ms": 489
+}
