@@ -12,18 +12,20 @@
  * 8. Working hours: 09:00-21:00 MSK full answers, outside — short + promise
  * 9. Polling every 30 seconds
  * 
- * RELIABILITY (v10 — unread_only optimization):
+ * RELIABILITY (v11 — mutex/polling freeze fix):
  * - Uses unread_only=true to fetch ONLY chats with new messages (2-5 instead of 100+)
  * - Cycle time reduced from ~200s to ~5-15s
  * - Uses recursive setTimeout (no overlap by design)
  * - Mutex flag prevents concurrent cycles even if setTimeout fires early
+ * - CRITICAL: setTimeout is INSIDE finally block — next cycle ALWAYS scheduled
+ * - CRITICAL: mutex ALWAYS released in finally — never gets stuck
+ * - CRITICAL: pending messages deleted AFTER successful send — no message loss
  * - Each individual chat sync has its own try-catch (one chat failure doesn't stop others)
  * - Each processAggregatedMessages call has a 45s timeout
  * - LLM calls have a 30s timeout
  * - Avito API calls have 12s timeout (in avito-api.ts)
  * - DB connection auto-resets on ECONNRESET/PROTOCOL errors
- * - Watchdog: if a cycle runs longer than 60s, it logs a warning
- * - Heartbeat log every cycle for monitoring
+ * - Mutex state logging: started/finished/skipped for debugging
  * - getPollingHealth() endpoint for dashboard monitoring
  */
 
@@ -107,10 +109,11 @@ async function processAggregatedMessages(
       .filter((t) => t.length > 0)
       .join("\n");
 
-    // Clean up pending messages FIRST to prevent re-processing
-    await db.deletePendingMessagesForChat(chatId);
-
-    if (!combinedText.trim()) return { replied: false };
+    if (!combinedText.trim()) {
+      // Nothing to process — clean up empty pending messages
+      await db.deletePendingMessagesForChat(chatId);
+      return { replied: false };
+    }
 
     const account = await db.getAvitoAccountById(avitoAccountId);
     if (!account || !account.avitoUserId) return { replied: false, error: "Account not found" };
@@ -157,6 +160,8 @@ async function processAggregatedMessages(
     // If bot decided not to respond (NO_RESPONSE), skip sending
     if (!botResponse.text) {
       console.log(`[AvitoSync] Chat ${chatId}: NO_RESPONSE — bot decided not to reply (conversation ended)`);
+      // Clean up pending — bot intentionally chose not to reply
+      await db.deletePendingMessagesForChat(chatId);
       return { replied: false };
     }
 
@@ -183,6 +188,10 @@ async function processAggregatedMessages(
       messageType: "text",
       avitoTimestamp: sentMsg.created || Math.floor(Date.now() / 1000),
     });
+
+    // Clean up pending messages AFTER successful send
+    // This ensures messages are not lost if LLM or Avito API fails
+    await db.deletePendingMessagesForChat(chatId);
 
     // Handle manager escalation
     if (botResponse.needsManager) {
@@ -527,15 +536,15 @@ const SLOW_CYCLE_WARN_MS = 60_000;
 
 /**
  * Execute one polling cycle with mutex protection.
- * No external timeout wrapper — instead, each internal operation has its own timeout.
- * This prevents the "rejected but still running" problem.
+ * CRITICAL: setTimeout is INSIDE finally block to guarantee next cycle is always scheduled.
+ * This prevents the polling from freezing permanently on any error.
  */
 async function executePollCycle(intervalMs: number): Promise<void> {
   if (!pollingActive) return;
 
   // Mutex: skip if previous cycle is still running
   if (cycleRunning) {
-    console.warn("[AvitoSync] Previous cycle still running, skipping this tick");
+    console.warn("[Polling] Skipped — previous cycle still running");
     // Schedule next attempt
     if (pollingActive) {
       pollingTimer = setTimeout(() => executePollCycle(intervalMs), 5000); // Retry in 5s
@@ -545,6 +554,7 @@ async function executePollCycle(intervalMs: number): Promise<void> {
 
   cycleRunning = true;
   const cycleStart = Date.now();
+  console.log("[Polling] Cycle started");
 
   try {
     await syncAllAccounts();
@@ -554,40 +564,44 @@ async function executePollCycle(intervalMs: number): Promise<void> {
 
     const elapsed = Date.now() - cycleStart;
     if (elapsed > SLOW_CYCLE_WARN_MS) {
-      console.warn(`[AvitoSync] ⚠️ Slow cycle: ${elapsed}ms (threshold: ${SLOW_CYCLE_WARN_MS}ms)`);
+      console.warn(`[Polling] ⚠️ Slow cycle: ${elapsed}ms (threshold: ${SLOW_CYCLE_WARN_MS}ms)`);
     }
   } catch (error: any) {
     consecutiveErrors++;
     console.error(
-      `[AvitoSync] Polling cycle error (${consecutiveErrors} consecutive):`,
+      `[Polling] Cycle error (${consecutiveErrors} consecutive):`,
       error.message
     );
 
     // If too many consecutive errors, try resetting DB connection
     if (consecutiveErrors >= 3) {
-      console.warn("[AvitoSync] Multiple consecutive errors, resetting DB connection...");
+      console.warn("[Polling] Multiple consecutive errors, resetting DB connection...");
       try {
         await db.resetDbConnection();
       } catch (resetErr: any) {
-        console.error("[AvitoSync] DB reset failed:", resetErr.message);
+        console.error("[Polling] DB reset failed:", resetErr.message);
       }
     }
   } finally {
+    // ALWAYS release mutex — no matter what happened above
     cycleRunning = false;
-  }
 
-  // Schedule next cycle (only if still active)
-  if (pollingActive) {
-    // Back off if too many errors
-    const delay = consecutiveErrors >= MAX_CONSECUTIVE_ERRORS
-      ? Math.min(intervalMs * 3, 120_000) // Max 2 minutes backoff
-      : intervalMs;
+    // ALWAYS schedule next cycle — inside finally to guarantee it runs
+    if (pollingActive) {
+      // Back off if too many errors
+      const delay = consecutiveErrors >= MAX_CONSECUTIVE_ERRORS
+        ? Math.min(intervalMs * 3, 120_000) // Max 2 minutes backoff
+        : intervalMs;
 
-    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      console.warn(`[AvitoSync] Backing off to ${delay / 1000}s due to ${consecutiveErrors} consecutive errors`);
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        console.warn(`[Polling] Backing off to ${delay / 1000}s due to ${consecutiveErrors} consecutive errors`);
+      }
+
+      console.log(`[Polling] Cycle finished, next in ${delay / 1000}s`);
+      pollingTimer = setTimeout(() => executePollCycle(intervalMs), delay);
+    } else {
+      console.log("[Polling] Cycle finished, polling stopped");
     }
-
-    pollingTimer = setTimeout(() => executePollCycle(intervalMs), delay);
   }
 }
 
