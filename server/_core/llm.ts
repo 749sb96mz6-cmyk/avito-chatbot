@@ -209,14 +209,18 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
+// ============================================================
+// ИЗМЕНЕНО: OpenRouter вместо Manus Forge API
+// OpenRouter совместим с OpenAI форматом и поддерживает Claude
+// ============================================================
 const resolveApiUrl = () =>
   ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-    : "https://forge.manus.im/v1/chat/completions";
+    : "https://openrouter.ai/api/v1/chat/completions";
 
 const assertApiKey = () => {
   if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+    throw new Error("BUILT_IN_FORGE_API_KEY is not configured");
   }
 };
 
@@ -280,7 +284,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
+    // ============================================================
+    // ИЗМЕНЕНО: Claude Haiku — быстрый и дешёвый (~$0.001 за диалог)
+    // Альтернативы:
+    //   "anthropic/claude-sonnet-4" — лучше качество, дороже
+    //   "anthropic/claude-haiku-4-5" — самый новый Haiku
+    // ============================================================
+    model: "anthropic/claude-haiku-4-5",
     messages: messages.map(normalizeMessage),
   };
 
@@ -296,10 +306,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
-  }
+  // ИЗМЕНЕНО: убран max_tokens: 32768 (слишком много для чат-бота)
+  // и убран параметр thinking (Gemini-специфичный, ломает Claude)
+  payload.max_tokens = 1024;
 
   const normalizedResponseFormat = normalizeResponseFormat({
     responseFormat,
@@ -321,7 +330,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${ENV.forgeApiKey}`,
+        "authorization": `Bearer ${ENV.forgeApiKey}`,
+        // OpenRouter требует эти заголовки
+        "http-referer": "https://avito-chatbot.app",
+        "x-title": "Avito Chatbot",
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
