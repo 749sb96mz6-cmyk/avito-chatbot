@@ -1,0 +1,39 @@
+# ============================================================
+# Avito Chatbot — Environment Variables
+# ============================================================
+# Скопируйте этот файл: cp env-template.txt ../.env
+# Заполните все значения и запустите: docker compose up -d
+# ============================================================
+
+# --- Database ---
+# Для Docker Compose эти значения используются автоматически
+MYSQL_ROOT_PASSWORD=changeme_root_password
+MYSQL_PASSWORD=changeme_db_password
+# DATABASE_URL задаётся автоматически в docker-compose.yml
+# Если запускаете БЕЗ Docker, укажите вручную:
+# DATABASE_URL=mysql://avito:password@localhost:3306/avito_chatbot
+
+# --- LLM (AI модель для ответов) ---
+# Вариант 1: OpenAI
+# BUILT_IN_FORGE_API_URL=https://api.openai.com
+# BUILT_IN_FORGE_API_KEY=sk-ваш-ключ-openai
+#
+# Вариант 2: OpenRouter (дешевле, много моделей)
+# BUILT_IN_FORGE_API_URL=https://openrouter.ai/api
+# BUILT_IN_FORGE_API_KEY=sk-or-ваш-ключ
+#
+# Вариант 3: Manus Forge (если есть доступ)
+BUILT_IN_FORGE_API_URL=https://forge.manus.im
+BUILT_IN_FORGE_API_KEY=ваш-ключ-forge
+
+# --- JWT (секрет для сессий, любая случайная строка) ---
+# Сгенерируйте: openssl rand -hex 32
+JWT_SECRET=сгенерируйте_случайную_строку_32_символа
+
+# --- Порт приложения ---
+APP_PORT=3000
+
+# --- Опционально: Telegram уведомления ---
+# Настраиваются через веб-интерфейс бота, но можно задать здесь
+# TELEGRAM_BOT_TOKEN=123456:ABC-DEF
+# TELEGRAM_CHAT_ID=-100123456789

@@ -1,0 +1,59 @@
+# ============================================================
+# Avito Chatbot — Docker Compose
+# ============================================================
+# Запуск: docker compose up -d
+# Логи:   docker compose logs -f app
+# Стоп:   docker compose down
+# ============================================================
+
+services:
+  # --- MySQL Database ---
+  db:
+    image: mysql:8.0
+    container_name: avito-chatbot-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme_root_password}
+      MYSQL_DATABASE: avito_chatbot
+      MYSQL_USER: avito
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-changeme_db_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-changeme_root_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # --- Avito Chatbot App ---
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: avito-chatbot-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      # Database connection (overrides .env for Docker network)
+      DATABASE_URL: mysql://avito:${MYSQL_PASSWORD:-changeme_db_password}@db:3306/avito_chatbot
+      NODE_ENV: production
+      PORT: 3000
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  mysql_data:
+    driver: local

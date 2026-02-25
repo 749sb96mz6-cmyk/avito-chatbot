@@ -1,0 +1,12 @@
+node_modules
+dist
+.manus-logs
+.git
+.env
+.env.*
+*.log
+coverage
+.vscode
+.idea
+attached_assets
+upload
